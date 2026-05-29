@@ -1,0 +1,6 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python freelance_bot.py"
+restartPolicyType = "always"
