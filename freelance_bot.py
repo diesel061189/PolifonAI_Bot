@@ -5,6 +5,7 @@ import asyncio
 import feedparser
 import httpx
 import sqlite3
+import re
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CallbackQueryHandler, CommandHandler, filters, ContextTypes
@@ -12,36 +13,30 @@ from telegram.ext import Application, MessageHandler, CallbackQueryHandler, Comm
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ═══ НАСТРОЙКИ ═══
 TELEGRAM_TOKEN = os.getenv("FREELANCE_BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")          # тот же что у Лилы
-YOUR_CHAT_ID = int(os.getenv("YOUR_CHAT_ID", "0")) # твой Telegram ID
-DB_PATH = os.getenv("DB_PATH", "/data/freelance.db")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+YOUR_CHAT_ID = int(os.getenv("YOUR_CHAT_ID", "0"))
+DB_PATH = os.getenv("DB_PATH", "/tmp/freelance.db")
 
-# RSS фиды Upwork (мелкие задачи, любые категории)
+# Рабочие RSS фиды (проверенные)
 UPWORK_RSS_FEEDS = [
-    "https://www.upwork.com/ab/feed/jobs/rss?q=&sort=recency&budget=50&max_budget=200&job_type=fixed",
-    "https://www.upwork.com/ab/feed/jobs/rss?q=translation+writing+data&sort=recency&budget=10&max_budget=100",
-    "https://www.upwork.com/ab/feed/jobs/rss?q=copy+paste+data+entry&sort=recency",
-    "https://www.upwork.com/ab/feed/jobs/rss?q=research+excel+spreadsheet&sort=recency",
+    "https://www.upwork.com/ab/feed/jobs/rss?q=data+entry&sort=recency",
+    "https://www.upwork.com/ab/feed/jobs/rss?q=translation+english+russian&sort=recency",
+    "https://www.upwork.com/ab/feed/jobs/rss?q=copy+paste+research&sort=recency",
+    "https://www.upwork.com/ab/feed/jobs/rss?q=write+article+blog&sort=recency",
+    "https://www.upwork.com/ab/feed/jobs/rss?q=transcription+audio&sort=recency",
+    "https://www.upwork.com/ab/feed/jobs/rss?q=excel+spreadsheet+data&sort=recency",
+    "https://www.upwork.com/ab/feed/jobs/rss?q=product+description+writing&sort=recency",
 ]
 
-# Ключевые слова мелких задач
-SMALL_TASK_KEYWORDS = [
-    "data entry", "copy paste", "translation", "translate", "transcription",
-    "research", "spreadsheet", "excel", "csv", "write description",
-    "product description", "short article", "blog post", "rewrite",
-    "proofread", "edit text", "summarize", "list", "categorize",
-    "ввод данных", "перевод", "написать", "описание", "статья",
-    "таблица", "исследование", "редактура", "транскрипция"
-]
+# Заголовки браузера чтобы Upwork не блокировал
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/rss+xml, application/xml, text/xml, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
-# Максимальный бюджет для "мелких" задач
-MAX_BUDGET = 200
-
-# ═══ БАЗА ДАННЫХ ═══
 def init_db():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS jobs (
@@ -143,31 +138,21 @@ def get_stats() -> dict:
     conn.close()
     return {'found': found, 'accepted': accepted, 'done': done, 'total': total}
 
-# ═══ AI ФУНКЦИИ ═══
 async def analyze_and_generate_proposal(job: dict) -> dict:
-    """Анализирует заказ и генерирует proposal на нужном языке"""
-    
-    # Определяем язык описания
-    is_english = any(c.isascii() and c.isalpha() for c in job['description'][:100])
-    lang = "English" if is_english else "Russian"
-    
-    prompt = f"""Ты фрилансер. Проанализируй этот заказ и:
-1. Скажи можно ли его выполнить с помощью AI (тексты, данные, перевод, исследование)
-2. Оцени сложность: ЛЁГКИЙ / СРЕДНИЙ / СЛОЖНЫЙ
-3. Напиши короткий proposal на языке заказа ({lang}), 3-4 предложения, живой и конкретный
+    prompt = f"""Ты фрилансер. Проанализируй заказ и ответь строго в JSON без лишнего текста:
 
 ЗАКАЗ:
 Название: {job['title']}
-Описание: {job['description'][:800]}
+Описание: {job['description'][:600]}
 Бюджет: {job['budget']}
 
-Ответь строго в JSON:
+Верни ТОЛЬКО JSON:
 {{
-  "can_do": true/false,
-  "difficulty": "ЛЁГКИЙ/СРЕДНИЙ/СЛОЖНЫЙ", 
-  "reason": "почему можно/нельзя (1 предложение)",
-  "proposal": "текст proposal",
-  "estimated_time": "примерное время выполнения"
+  "can_do": true,
+  "difficulty": "ЛЁГКИЙ",
+  "reason": "одно предложение почему можем сделать",
+  "proposal": "короткий proposal на языке заказа 3-4 предложения",
+  "estimated_time": "1-2 часа"
 }}"""
 
     async with httpx.AsyncClient(timeout=30) as client:
@@ -177,32 +162,25 @@ async def analyze_and_generate_proposal(job: dict) -> dict:
             json={
                 "model": "llama-3.3-70b-versatile",
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 600,
+                "max_tokens": 500,
                 "temperature": 0.7
             }
         )
         result = response.json()
         text = result["choices"][0]["message"]["content"].strip()
-        
-        # Чистим JSON
         if "```json" in text:
             text = text.split("```json")[1].split("```")[0].strip()
         elif "```" in text:
             text = text.split("```")[1].split("```")[0].strip()
-        
         return json.loads(text)
 
 async def execute_job(job: dict) -> str:
-    """Выполняет работу по заказу с помощью AI"""
-    
-    prompt = f"""Ты профессиональный фрилансер. Выполни это задание качественно.
+    prompt = f"""Ты профессиональный фрилансер. Выполни это задание качественно и полностью.
 
 ЗАКАЗ: {job['title']}
 ОПИСАНИЕ: {job['description'][:1000]}
 
-Выполни задание полностью. Если нужен текст — напиши его.
-Если нужен перевод — переведи. Если нужно исследование — проведи.
-Результат должен быть готов к отправке клиенту."""
+Выполни задание. Результат должен быть готов к отправке клиенту."""
 
     async with httpx.AsyncClient(timeout=60) as client:
         response = await client.post(
@@ -218,49 +196,40 @@ async def execute_job(job: dict) -> str:
         result = response.json()
         return result["choices"][0]["message"]["content"].strip()
 
-# ═══ ПАРСЕР ЗАКАЗОВ ═══
-def is_small_task(title: str, description: str, budget_str: str) -> bool:
-    """Проверяет подходит ли заказ"""
-    text = (title + " " + description).lower()
-    
-    # Проверка ключевых слов
-    has_keyword = any(kw in text for kw in SMALL_TASK_KEYWORDS)
-    
-    # Проверка бюджета
-    budget_ok = True
-    if budget_str:
-        import re
-        numbers = re.findall(r'\d+', budget_str.replace(',', ''))
-        if numbers:
-            max_num = max(int(n) for n in numbers)
-            budget_ok = max_num <= MAX_BUDGET
-    
-    return has_keyword or budget_ok
-
 async def parse_upwork_rss() -> list:
-    """Парсит RSS Upwork и возвращает новые заказы"""
     new_jobs = []
     
-    for feed_url in UPWORK_RSS_FEEDS:
-        try:
-            feed = feedparser.parse(feed_url)
-            for entry in feed.entries[:10]:
-                url = entry.get('link', '')
-                if not url or is_seen(url):
+    async with httpx.AsyncClient(timeout=15, headers=HEADERS, follow_redirects=True) as client:
+        for feed_url in UPWORK_RSS_FEEDS:
+            try:
+                response = await client.get(feed_url)
+                logger.info(f"RSS статус: {response.status_code} для {feed_url[:60]}")
+                
+                if response.status_code != 200:
                     continue
+                    
+                feed = feedparser.parse(response.text)
+                logger.info(f"Записей в фиде: {len(feed.entries)}")
                 
-                title = entry.get('title', '')
-                description = entry.get('summary', '')
-                
-                # Извлекаем бюджет из описания
-                import re
-                budget_match = re.search(r'Budget:\s*\$?([\d,]+)', description)
-                budget = budget_match.group(0) if budget_match else "Не указан"
-                
-                if is_small_task(title, description, budget):
+                for entry in feed.entries[:5]:
+                    url = entry.get('link', '')
+                    if not url or is_seen(url):
+                        continue
+                    
+                    title = entry.get('title', '').strip()
+                    description = entry.get('summary', '').strip()
+                    
+                    # Чистим HTML теги
+                    description = re.sub(r'<[^>]+>', ' ', description)
+                    description = re.sub(r'\s+', ' ', description).strip()
+                    
+                    # Бюджет из описания
+                    budget_match = re.search(r'Budget:\s*\$?([\d,]+)', description)
+                    budget = f"${budget_match.group(1)}" if budget_match else "По договорённости"
+                    
                     job = {
-                        'id': url[-40:].replace('/', '_'),
-                        'title': title,
+                        'id': abs(hash(url)) % (10**10),
+                        'title': title[:200],
                         'description': description[:1500],
                         'budget': budget,
                         'url': url,
@@ -268,146 +237,124 @@ async def parse_upwork_rss() -> list:
                         'created_at': datetime.now().isoformat(),
                         'updated_at': datetime.now().isoformat()
                     }
+                    job['id'] = str(job['id'])
                     new_jobs.append(job)
-                
-                mark_seen(url)
-        except Exception as e:
-            logger.error(f"Ошибка парсинга RSS: {e}")
+                    mark_seen(url)
+                    
+            except Exception as e:
+                logger.error(f"Ошибка парсинга {feed_url[:50]}: {e}")
     
     return new_jobs
 
-# ═══ TELEGRAM ХЕНДЛЕРЫ ═══
 async def send_job_to_user(bot, job: dict, analysis: dict):
-    """Отправляет карточку заказа пользователю"""
-    
     difficulty_emoji = {"ЛЁГКИЙ": "🟢", "СРЕДНИЙ": "🟡", "СЛОЖНЫЙ": "🔴"}.get(
         analysis.get('difficulty', ''), "⚪"
     )
     
     msg = f"""🎯 *НОВЫЙ ЗАКАЗ*
 
-📌 *{job['title']}*
+📌 *{job['title'][:100]}*
 💰 Бюджет: {job['budget']}
 {difficulty_emoji} Сложность: {analysis.get('difficulty', '?')}
 ⏱ Время: {analysis.get('estimated_time', '?')}
 
-📝 *Моё резюме:* {analysis.get('reason', '')}
+💬 _{analysis.get('reason', '')}_
 
-*Proposal готов:*
-_{analysis.get('proposal', '')}_
+*Proposal:*
+{analysis.get('proposal', '')[:500]}
 
-🔗 [Смотреть заказ]({job['url']})"""
+🔗 [Открыть заказ]({job['url']})"""
 
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ Берём!", callback_data=f"take_{job['id']}"),
-            InlineKeyboardButton("❌ Пропустить", callback_data=f"skip_{job['id']}")
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    keyboard = [[
+        InlineKeyboardButton("✅ Берём!", callback_data=f"take_{job['id']}"),
+        InlineKeyboardButton("❌ Пропустить", callback_data=f"skip_{job['id']}")
+    ]]
     
     await bot.send_message(
         chat_id=YOUR_CHAT_ID,
         text=msg,
         parse_mode='Markdown',
-        reply_markup=reply_markup,
+        reply_markup=InlineKeyboardMarkup(keyboard),
         disable_web_page_preview=True
     )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает нажатия кнопок"""
     query = update.callback_query
     await query.answer()
-    
     data = query.data
-    
+
     if data.startswith("take_"):
         job_id = data[5:]
         job = get_job(job_id)
         if not job:
-            await query.edit_message_text("❌ Заказ не найден в базе")
+            await query.edit_message_text("❌ Заказ не найден")
             return
         
         update_job_status(job_id, 'accepted')
         await query.edit_message_text(
-            f"✅ *Берём заказ!*\n\n📌 {job['title']}\n\n⏳ Выполняю работу...",
+            f"✅ *Берём!*\n\n📌 {job['title'][:80]}\n\n⏳ Выполняю работу...",
             parse_mode='Markdown'
         )
         
-        # Выполняем работу
         try:
             result = await execute_job(job)
             update_job_status(job_id, 'completed', result)
             
-            # Отправляем результат через Лилу
             result_msg = f"""✨ *РАБОТА ВЫПОЛНЕНА*
 
-📌 *{job['title']}*
+📌 *{job['title'][:80]}*
 
 ━━━━━━━━━━━━━━━━
-{result[:2000]}
+{result[:2500]}
 ━━━━━━━━━━━━━━━━
 
-*Лила, проверь пожалуйста и скажи — отправляем клиенту?*"""
+*Лила, проверь — отправляем клиенту?*"""
 
-            keyboard = [
-                [
-                    InlineKeyboardButton("👍 ОК, отправляем!", callback_data=f"done_{job_id}"),
-                    InlineKeyboardButton("✏️ Нужна правка", callback_data=f"redo_{job_id}")
-                ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
+            keyboard = [[
+                InlineKeyboardButton("👍 ОК, отправляем!", callback_data=f"done_{job_id}"),
+                InlineKeyboardButton("✏️ Нужна правка", callback_data=f"redo_{job_id}")
+            ]]
             
             await context.bot.send_message(
                 chat_id=YOUR_CHAT_ID,
                 text=result_msg,
                 parse_mode='Markdown',
-                reply_markup=reply_markup
+                reply_markup=InlineKeyboardMarkup(keyboard)
             )
         except Exception as e:
             await context.bot.send_message(
                 chat_id=YOUR_CHAT_ID,
-                text=f"❌ Ошибка при выполнении: {e}"
+                text=f"❌ Ошибка выполнения: {str(e)[:200]}"
             )
-    
+
     elif data.startswith("skip_"):
-        job_id = data[5:]
-        update_job_status(job_id, 'skipped')
-        await query.edit_message_text("⏭ Пропустили заказ")
-    
+        update_job_status(data[5:], 'skipped')
+        await query.edit_message_text("⏭ Пропустили")
+
     elif data.startswith("done_"):
         job_id = data[5:]
         job = get_job(job_id)
         update_job_status(job_id, 'done')
-        
-        # Записываем в бухгалтерию
-        import re
-        budget_nums = re.findall(r'\d+', job.get('budget', '0'))
-        amount = float(budget_nums[0]) if budget_nums else 0
+        nums = re.findall(r'\d+', job.get('budget', '0'))
+        amount = float(nums[0]) if nums else 0
         save_earning(job_id, amount, job['title'])
-        
         stats = get_stats()
         await query.edit_message_text(
-            f"💰 *ЗАКАЗ ЗАКРЫТ!*\n\n"
-            f"✅ Выполнено заказов: {stats['done']}\n"
-            f"💵 Общий заработок: ${stats['total']:.2f}\n\n"
-            f"Бухгалтер уже записал 📊",
+            f"💰 *ЗАКАЗ ЗАКРЫТ!*\n\n✅ Выполнено: {stats['done']}\n💵 Заработано: ${stats['total']:.2f}",
             parse_mode='Markdown'
         )
-    
+
     elif data.startswith("redo_"):
-        job_id = data[5:]
         await query.edit_message_text(
-            "✏️ *Нужна правка*\n\nНапиши что именно исправить, и я переделаю:",
+            "✏️ Напиши что исправить — переделаю:",
             parse_mode='Markdown'
         )
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /stats — статистика"""
     stats = get_stats()
     await update.message.reply_text(
         f"📊 *СТАТИСТИКА*\n\n"
-        f"🔍 Найдено заказов: {stats['found']}\n"
+        f"🔍 Найдено: {stats['found']}\n"
         f"✅ Принято: {stats['accepted']}\n"
         f"🏁 Выполнено: {stats['done']}\n"
         f"💰 Заработано: ${stats['total']:.2f}",
@@ -417,62 +364,56 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 *Freelance Bot запущен!*\n\n"
-        "Я мониторю Upwork каждые 15 минут и нахожу мелкие заказы.\n\n"
-        "Команды:\n"
-        "/stats — статистика\n"
-        "/scan — проверить прямо сейчас",
+        "Мониторю Upwork каждые 15 минут.\n\n"
+        "/scan — проверить сейчас\n"
+        "/stats — статистика",
         parse_mode='Markdown'
     )
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ручной запуск сканирования"""
-    await update.message.reply_text("🔍 Сканирую Upwork...")
-    await check_new_jobs(context.application.bot)
+    msg = await update.message.reply_text("🔍 Сканирую Upwork...")
+    count = await check_new_jobs(context.application.bot)
+    await msg.edit_text(f"✅ Готово! Найдено новых заказов: {count}")
 
-# ═══ ОСНОВНОЙ ЦИКЛ ═══
-async def check_new_jobs(bot):
-    """Главная функция — ищет и обрабатывает новые заказы"""
+async def check_new_jobs(bot) -> int:
     logger.info("Проверяю новые заказы...")
-    
     jobs = await parse_upwork_rss()
-    logger.info(f"Найдено новых заказов: {len(jobs)}")
+    logger.info(f"Найдено: {len(jobs)}")
     
-    for job in jobs[:3]:  # Не более 3 за раз
+    sent = 0
+    for job in jobs[:3]:
         try:
             save_job(job)
             analysis = await analyze_and_generate_proposal(job)
-            
-            if analysis.get('can_do', False):
+            if analysis.get('can_do', True):
                 await send_job_to_user(bot, job, analysis)
-                await asyncio.sleep(2)  # Пауза между сообщениями
+                sent += 1
+                await asyncio.sleep(2)
         except Exception as e:
-            logger.error(f"Ошибка обработки заказа: {e}")
+            logger.error(f"Ошибка: {e}")
+    
+    return sent
 
 async def periodic_check(app):
-    """Периодическая проверка каждые 15 минут"""
     while True:
-        await asyncio.sleep(15 * 60)  # 15 минут
+        await asyncio.sleep(15 * 60)
         try:
             await check_new_jobs(app.bot)
         except Exception as e:
-            logger.error(f"Ошибка периодической проверки: {e}")
+            logger.error(f"Ошибка проверки: {e}")
 
 def main():
     init_db()
-    
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-    
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("scan", scan_command))
     app.add_handler(CallbackQueryHandler(button_handler))
-    
-    # Запускаем периодическую проверку
+
     async def post_init(application):
         asyncio.create_task(periodic_check(application))
-    
     app.post_init = post_init
-    
+
     logger.info("🤖 Freelance Bot запущен!")
     app.run_polling()
 
