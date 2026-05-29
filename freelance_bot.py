@@ -58,16 +58,54 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
 }
 
-# Ключевые слова мелких задач
-KEYWORDS = [
-    "data entry", "copy paste", "translation", "translate", "transcription",
-    "research", "spreadsheet", "excel", "csv", "write", "description",
-    "article", "blog", "rewrite", "proofread", "edit", "summarize",
-    "list", "categorize", "simple", "easy", "quick", "short",
-    "ввод данных", "перевод", "написать", "описание", "статья",
-    "таблица", "исследование", "редактура", "транскрипция", "простая",
-    "быстрая", "небольшая", "текст", "перевести"
+# ✅ Задачи которые AI реально выполнит
+KEYWORDS_WHITELIST = [
+    # Тексты и контент
+    "data entry", "copy paste", "transcription", "translate", "translation",
+    "proofread", "proofreading", "rewrite", "copywriting", "content writing",
+    "article writing", "blog post", "blog writing", "product description",
+    "write descriptions", "write articles", "write content", "summarize",
+    "summary", "research", "internet research", "web research",
+    "copy editing", "text editing",
+    # Данные и таблицы
+    "spreadsheet", "excel", "google sheets", "csv", "data collection",
+    "data mining", "web scraping", "data formatting", "data cleaning",
+    "list building", "contact list", "email list", "categorize",
+    # Простые задачи
+    "simple task", "easy task", "quick task", "small task", "minor task",
+    "virtual assistant", "va task", "admin task", "administrative",
+    "pdf to word", "pdf to excel", "convert document", "document formatting",
+    # Русские ключевые слова
+    "ввод данных", "перевод", "транскрипция", "копирайтинг",
+    "написать статью", "написать текст", "редактура", "корректура",
+    "описание товара", "сбор данных", "таблица", "исследование",
 ]
+
+# 🚫 Задачи которые AI НЕ сделает — блокируем
+KEYWORDS_BLACKLIST = [
+    # Видео и аудио
+    "video edit", "video editing", "video production", "video shoot",
+    "wedding video", "cinematic", "animation", "motion graphic",
+    "after effects", "premiere", "final cut", "audio edit", "audio mixing",
+    "podcast edit", "music production", "sound design",
+    # Программирование
+    "developer", "development", "programming", "coding", "software",
+    "mobile app", "web app", "api integration", "backend", "frontend",
+    "react", "angular", "node.js", "python developer", "django", "flask",
+    "wordpress developer", "shopify developer", "app development",
+    # Дизайн (сложный)
+    "logo design", "brand identity", "ui/ux", "ux design", "ui design",
+    "graphic design", "illustration", "3d model", "3d design", "cad",
+    "photo editing", "photoshop", "lightroom", "retouching",
+    # Большие бюджеты
+    "long term", "ongoing", "full time", "part time contract",
+    # Прочее
+    "seo specialist", "paid ads", "google ads", "facebook ads",
+    "social media manager", "community manager",
+]
+
+# Максимальный бюджет $300
+MAX_BUDGET_USD = 300
 
 # ═══ БАЗА ДАННЫХ ═══
 def init_db():
@@ -175,9 +213,29 @@ def clean_html(text):
 def make_job_id(url):
     return str(abs(hash(url)) % (10**12))
 
-def is_relevant(title, description):
+def is_relevant(title, description, budget_str=""):
     text = (title + " " + description).lower()
-    return any(kw in text for kw in KEYWORDS)
+    
+    # 🚫 Сначала проверяем чёрный список — если есть хоть одно слово, отклоняем
+    for bad in KEYWORDS_BLACKLIST:
+        if bad in text:
+            logger.info(f"❌ Отклонён (чёрный список: '{bad}'): {title[:50]}")
+            return False
+    
+    # 💰 Проверяем бюджет — отклоняем дорогие заказы
+    if budget_str:
+        nums = re.findall(r'\d+', budget_str.replace(',', ''))
+        if nums:
+            max_num = max(int(n) for n in nums)
+            if max_num > MAX_BUDGET_USD:
+                logger.info(f"❌ Отклонён (бюджет ${max_num} > ${MAX_BUDGET_USD}): {title[:50]}")
+                return False
+    
+    # ✅ Проверяем белый список — должно быть хоть одно подходящее слово
+    has_keyword = any(kw in text for kw in KEYWORDS_WHITELIST)
+    if not has_keyword:
+        logger.info(f"⚪ Пропущен (нет ключевых слов): {title[:50]}")
+    return has_keyword
 
 # ═══ ПАРСЕРЫ ═══
 
@@ -298,7 +356,7 @@ async def parse_telegram_channels(client) -> list:
                     continue
                 
                 # Проверяем релевантность
-                if not is_relevant(post_text, ""):
+                if not is_relevant(post_text, "", ""):
                     continue
                 
                 # Бюджет
@@ -392,7 +450,7 @@ async def check_new_jobs(bot) -> int:
     logger.info(f"📦 Всего найдено: {len(all_jobs)} заказов")
     
     # Фильтруем релевантные
-    relevant = [j for j in all_jobs if is_relevant(j['title'], j['description'])]
+    relevant = [j for j in all_jobs if is_relevant(j['title'], j['description'], j.get('budget',''))]
     logger.info(f"✅ Релевантных: {len(relevant)}")
     
     sent = 0
