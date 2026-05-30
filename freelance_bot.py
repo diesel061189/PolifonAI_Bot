@@ -149,19 +149,11 @@ HEADERS = {
 
 # ═══ РОССИЙСКИЕ БИРЖИ ═══
 RU_RSS_FEEDS = [
-    # FL.ru
+    # FL.ru — работает ✅
     ("https://www.fl.ru/rss/all.xml", "🇷🇺 FL.ru"),
     ("https://www.fl.ru/rss/all.xml?category=2", "🇷🇺 FL.ru/Тексты"),
     ("https://www.fl.ru/rss/all.xml?category=21", "🇷🇺 FL.ru/Переводы"),
     ("https://www.fl.ru/rss/all.xml?category=19", "🇷🇺 FL.ru/Данные"),
-    # Freelance.ru
-    ("https://freelance.ru/rss/projects.xml", "🇷🇺 Freelance.ru"),
-    # Work-zilla
-    ("https://work-zilla.com/rss/tasks", "🇷🇺 Work-zilla"),
-    ("https://work-zilla.com/rss/tasks?category=texts", "🇷🇺 Work-zilla/Тексты"),
-    ("https://work-zilla.com/rss/tasks?category=translations", "🇷🇺 Work-zilla/Переводы"),
-    # Kwork
-    ("https://kwork.ru/rss/all", "🇷🇺 Kwork"),
 ]
 
 # ═══ МЕЖДУНАРОДНЫЕ БИРЖИ ═══
@@ -771,11 +763,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 *Полифан на связи!*\n\n"
-        "Мониторю сразу 7 источников:\n"
-        "🇷🇺 FL.ru\n"
-        "🇷🇺 Freelance.ru\n"
-        "🇷🇺 Work-zilla.com\n"
-        "🇷🇺 Kwork.ru\n"
+        "Мониторю рабочие источники:\n"
+        "🇷🇺 FL.ru (4 категории)\n"
         "🟠 Guru.com (прямой парсинг)\n"
         "🔵 PeoplePerHour\n"
         "📱 Telegram каналы\n\n"
@@ -825,6 +814,11 @@ async def check_new_jobs(bot) -> int:
                 all_jobs.extend(r)
 
     logger.info(f"📦 Всего найдено: {len(all_jobs)}")
+    
+    # Фильтруем релевантные
+    relevant = [j for j in all_jobs if is_relevant(j['title'], j['description'], j.get('budget',''))]
+    logger.info(f"✅ Релевантных: {len(relevant)}")
+    
     sent = 0
     for job in relevant[:6]:  # До 6 заказов за раз
         try:
