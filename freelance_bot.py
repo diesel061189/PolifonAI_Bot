@@ -34,10 +34,12 @@ RU_RSS_FEEDS = [
     ("https://www.fl.ru/rss/all.xml?category=19", "🇷🇺 FL.ru/Данные"),
     # Freelance.ru
     ("https://freelance.ru/rss/projects.xml", "🇷🇺 Freelance.ru"),
-    # Weblancer
-    ("https://www.weblancer.net/jobs/feed/", "🇷🇺 Weblancer"),
-    ("https://www.weblancer.net/jobs/feed/?cat=13", "🇷🇺 Weblancer/Тексты"),
-    ("https://www.weblancer.net/jobs/feed/?cat=22", "🇷🇺 Weblancer/Переводы"),
+    # Work-zilla
+    ("https://work-zilla.com/rss/tasks", "🇷🇺 Work-zilla"),
+    ("https://work-zilla.com/rss/tasks?category=texts", "🇷🇺 Work-zilla/Тексты"),
+    ("https://work-zilla.com/rss/tasks?category=translations", "🇷🇺 Work-zilla/Переводы"),
+    # Kwork
+    ("https://kwork.ru/rss/all", "🇷🇺 Kwork"),
 ]
 
 # ═══ МЕЖДУНАРОДНЫЕ БИРЖИ ═══
@@ -498,7 +500,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Мониторю сразу 6 источников:\n"
         "🇷🇺 FL.ru\n"
         "🇷🇺 Freelance.ru\n"
-        "🇷🇺 Weblancer.net\n"
+        "🇷🇺 Work-zilla.com\n"
+        "🇷🇺 Kwork.ru\n"
         "🟠 Guru.com\n"
         "🔵 PeoplePerHour\n"
         "📱 Telegram каналы\n\n"
