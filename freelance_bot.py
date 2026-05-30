@@ -158,43 +158,67 @@ RU_RSS_FEEDS = [
 
 # ═══ МЕЖДУНАРОДНЫЕ БИРЖИ ═══
 EN_RSS_FEEDS = [
-    ("https://www.peopleperhour.com/jobs/rss", "🔵 PeoplePerHour"),
-    ("https://www.peopleperhour.com/jobs/rss?service=writing", "🔵 PPH/Writing"),
-    ("https://www.peopleperhour.com/jobs/rss?service=translation", "🔵 PPH/Translation"),
+    # PeoplePerHour — рабочие фиды по ключевым словам
+    ("https://www.peopleperhour.com/feed/jobs?term=translation", "🔵 PPH/Translation"),
+    ("https://www.peopleperhour.com/feed/jobs?term=copywriting", "🔵 PPH/Copywriting"),
+    ("https://www.peopleperhour.com/feed/jobs?term=data+entry", "🔵 PPH/DataEntry"),
+    ("https://www.peopleperhour.com/feed/jobs?term=article+writing", "🔵 PPH/Writing"),
+    ("https://www.peopleperhour.com/feed/jobs?term=transcription", "🔵 PPH/Transcription"),
+    ("https://www.peopleperhour.com/feed/jobs?term=proofreading", "🔵 PPH/Proofreading"),
+    ("https://www.peopleperhour.com/feed/jobs?term=research", "🔵 PPH/Research"),
+    ("https://www.peopleperhour.com/feed/jobs?term=product+description", "🔵 PPH/ProductDesc"),
 ]
 
 async def parse_guru_direct(client) -> list:
-    """Парсим Guru.com через правильные URL"""
+    """Парсим Guru.com только свежие заказы"""
     jobs = []
     urls = [
-        "https://www.guru.com/d/jobs/?skill=data-entry",
-        "https://www.guru.com/d/jobs/?skill=translation",
-        "https://www.guru.com/d/jobs/?skill=writing",
-        "https://www.guru.com/d/jobs/?skill=research",
-        "https://www.guru.com/d/jobs/?skill=transcription",
-        "https://www.guru.com/d/jobs/?skill=copywriting",
+        "https://www.guru.com/d/jobs/?skill=data-entry&sort=date",
+        "https://www.guru.com/d/jobs/?skill=translation&sort=date",
+        "https://www.guru.com/d/jobs/?skill=writing&sort=date",
+        "https://www.guru.com/d/jobs/?skill=research&sort=date",
+        "https://www.guru.com/d/jobs/?skill=transcription&sort=date",
+        "https://www.guru.com/d/jobs/?skill=copywriting&sort=date",
     ]
+    
+    from datetime import timedelta
+    cutoff_date = datetime.now() - timedelta(days=7)  # Только за последние 7 дней
+    
     for url in urls:
         try:
             r = await client.get(url, headers=HEADERS)
-            logger.info(f"Guru URL {url[-30:]}: {r.status_code}")
+            logger.info(f"Guru {url[-30:]}: {r.status_code}")
             if r.status_code != 200:
                 continue
             
-            # Ищем заказы в HTML по разным паттернам
-            # Паттерн 1: ссылки на заказы
+            # Ищем ссылки на заказы
             links = re.findall(r'href="(/d/jobs/[^"]+)"', r.text)
-            titles_raw = re.findall(r'<h2[^>]*class="[^"]*jobRecord[^"]*"[^>]*>(.*?)</h2>', r.text, re.DOTALL)
-            if not titles_raw:
-                titles_raw = re.findall(r'class="jobTitle[^"]*"[^>]*>(.*?)</[^>]+>', r.text, re.DOTALL)
+            titles_raw = re.findall(r'<h2[^>]*>(.*?)</h2>', r.text, re.DOTALL)
+            
+            # Ищем даты публикации
+            dates_raw = re.findall(r'(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4})', r.text)
             
             for i, link in enumerate(links[:5]):
                 full_url = f"https://www.guru.com{link}"
                 if is_seen(full_url):
                     continue
-                title = clean_html(titles_raw[i]) if i < len(titles_raw) else link.split('/')[-1].replace('-', ' ')
+                
+                # Проверяем дату если есть
+                if i < len(dates_raw):
+                    try:
+                        job_date = datetime.strptime(dates_raw[i], "%d %b %Y")
+                        if job_date < cutoff_date:
+                            logger.info(f"Guru: пропускаем старый заказ {dates_raw[i]}")
+                            mark_seen(full_url)
+                            continue
+                    except:
+                        pass
+                
+                title = clean_html(titles_raw[i]) if i < len(titles_raw) else ""
                 if not title or len(title) < 5:
+                    mark_seen(full_url)
                     continue
+                
                 jobs.append({
                     'id': make_id(full_url), 'title': title[:200],
                     'description': title, 'budget': "По договорённости",
@@ -204,10 +228,11 @@ async def parse_guru_direct(client) -> list:
                     'updated_at': datetime.now().isoformat()
                 })
                 mark_seen(full_url)
+                
         except Exception as e:
-            logger.error(f"❌ Guru.com {url[-20:]}: {e}")
+            logger.error(f"❌ Guru.com: {e}")
     
-    logger.info(f"Guru.com итого: {len(jobs)}")
+    logger.info(f"Guru.com свежих заказов: {len(jobs)}")
     return jobs
 
 # ═══ TELEGRAM КАНАЛЫ С ЗАКАЗАМИ ═══
@@ -657,6 +682,7 @@ async def send_job_card(bot, job: dict, analysis: dict):
         InlineKeyboardButton("✅ Берём!", callback_data=f"take_{job['id']}"),
         InlineKeyboardButton("❌ Пропустить", callback_data=f"skip_{job['id']}")
     ],[
+        InlineKeyboardButton("📋 Скопировать proposal", callback_data=f"copy_{job['id']}"),
         InlineKeyboardButton("🚫 Не наш заказ", callback_data=f"notours_{job['id']}")
     ]]
     await bot.send_message(
@@ -778,6 +804,33 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("redo_"):
         await query.edit_message_text("✏️ Напиши что исправить:")
+
+    elif data.startswith("copy_"):
+        job_id = data[5:]
+        job = get_job(job_id)
+        if not job:
+            await query.answer("❌ Заказ не найден", show_alert=True)
+            return
+        
+        # Генерируем свежий proposal
+        await query.answer("⏳ Генерирую proposal...")
+        try:
+            analysis = await analyze_job(job)
+            proposal = analysis.get('proposal', '')
+            
+            await context.bot.send_message(
+                chat_id=YOUR_CHAT_ID,
+                text=f"📋 *PROPOSAL ГОТОВ — КОПИРУЙ И ВСТАВЛЯЙ:*\n\n"
+                     f"```\n{proposal}\n```\n\n"
+                     f"🔗 [Открыть заказ на сайте]({job['url']})\n\n"
+                     f"1️⃣ Нажми на текст выше — он скопируется\n"
+                     f"2️⃣ Открой заказ по ссылке\n"
+                     f"3️⃣ Вставь и отправь!",
+                parse_mode='Markdown',
+                disable_web_page_preview=True
+            )
+        except Exception as e:
+            await query.answer(f"❌ Ошибка: {str(e)[:50]}", show_alert=True)
 
     elif data.startswith("notours_"):
         job_id = data[8:]
