@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv("FREELANCE_BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 YOUR_CHAT_ID = int(os.getenv("YOUR_CHAT_ID", "0"))
+LILU_CHAT_ID = int(os.getenv("LILU_CHAT_ID", "0"))
 DB_PATH = os.getenv("DB_PATH", "/tmp/freelance.db")
 
 HEADERS = {
@@ -370,6 +371,7 @@ async def execute_job(job: dict) -> str:
 ЗАКАЗ: {job['title']}
 ОПИСАНИЕ: {job['description'][:800]}
 
+Важно: в конце вместо "Ваше имя" или подписи пиши "Артём".
 Результат должен быть готов к отправке клиенту."""
 
     async with httpx.AsyncClient(timeout=60) as client:
@@ -434,12 +436,30 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("👍 ОК, сдаём!", callback_data=f"done_{job_id}"),
                 InlineKeyboardButton("✏️ Правка", callback_data=f"redo_{job_id}")
             ]]
+            
+            result_msg = (
+                f"✨ *ГОТОВО!*\n\n"
+                f"📌 *{job['title'][:80]}*\n\n"
+                f"━━━━━━━━━━\n{result[:2500]}\n━━━━━━━━━━\n\n"
+                f"*Лила, проверь — отправляем?*"
+            )
+            
+            # Шлём тебе
             await context.bot.send_message(
                 chat_id=YOUR_CHAT_ID,
-                text=f"✨ *ГОТОВО!*\n\n📌 *{job['title'][:80]}*\n\n━━━━━━━━━━\n{result[:2500]}\n━━━━━━━━━━\n\n*Лила, проверь — отправляем?*",
+                text=result_msg,
                 parse_mode='Markdown',
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
+            
+            # Шлём Лиле если настроено
+            if LILU_CHAT_ID and LILU_CHAT_ID != YOUR_CHAT_ID:
+                await context.bot.send_message(
+                    chat_id=LILU_CHAT_ID,
+                    text=result_msg,
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
         except Exception as e:
             await context.bot.send_message(chat_id=YOUR_CHAT_ID, text=f"❌ Ошибка: {str(e)[:200]}")
 
