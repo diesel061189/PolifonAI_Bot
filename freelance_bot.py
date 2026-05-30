@@ -211,12 +211,19 @@ async def parse_guru_direct(client) -> list:
     return jobs
 
 # ═══ TELEGRAM КАНАЛЫ С ЗАКАЗАМИ ═══
+# ═══ TELEGRAM КАНАЛЫ С ЗАКАЗАМИ ═══
 TG_CHANNELS = [
+    # Фриланс заказы
     "freelance_ru",
     "freelancehunt_ru",
-    "it_freelance_ru",
+    "norм_rabota",
     "kopiraiting_ru",
     "freelance_project_ru",
+    "teksty_i_kopiraiting",
+    "zp50k",
+    "kadrof",
+    "distantsiya_ru",
+    "freeworkfeed",
 ]
 
 # ═══ ФИЛЬТРЫ ═══
