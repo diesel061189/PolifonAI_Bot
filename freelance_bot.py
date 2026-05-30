@@ -561,6 +561,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/stats — статистика",
         parse_mode='Markdown')
 
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🤖 *Полифан на связи!*\n\n"
+        "Мониторю источники:\n"
+        "🇷🇺 FL.ru\n"
+        "🟣 Хабр Фриланс\n"
+        "🌍 We Work Remotely\n"
+        "🌍 Remote.co\n"
+        "🌍 ProBlogger Jobs\n\n"
+        "Проверка каждые 15 минут!\n\n"
+        "/scan — проверить сейчас\n"
+        "/stats — статистика",
+        parse_mode='Markdown')
+
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats = get_stats()
     by_src = "\n".join([f"  {s}: {c}" for s,c in stats['by_src']])
