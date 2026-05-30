@@ -334,11 +334,12 @@ MAX_BUDGET_USD = 200
 def is_relevant(title: str, description: str, budget: str = "") -> bool:
     text = (title + " " + description).lower()
     
+    # 🚫 Чёрный список — сначала
     for bad in BLACKLIST:
         if bad in text:
             return False
     
-    # Проверка бюджета
+    # 💰 Проверка бюджета
     if budget:
         nums = re.findall(r'\d+', budget.replace(',', '').replace(' ', ''))
         if nums:
@@ -349,8 +350,23 @@ def is_relevant(title: str, description: str, budget: str = "") -> bool:
             elif '$' in budget or 'usd' in budget.lower():
                 if max_num > MAX_BUDGET_USD:
                     return False
+
+    # ✅ Белый список
+    if any(kw in text for kw in WHITELIST):
+        return True
     
-    return any(kw in text for kw in WHITELIST)
+    # 🌍 Для английских заказов — более мягкая проверка
+    # Если заголовок на английском и не в чёрном списке — берём
+    is_english = bool(re.search(r'^[a-zA-Z\s\d\-\,\.]+$', title.strip()))
+    if is_english and len(title) > 10:
+        # Дополнительные стоп-слова для английских
+        en_stop = ['developer', 'programmer', 'engineer', 'architect', 
+                   'video', 'animation', 'design logo', 'brand identity',
+                   'mobile app', 'web app', 'wordpress', 'shopify dev']
+        if not any(stop in text for stop in en_stop):
+            return True
+    
+    return False
 
 # ═══ БАЗА ДАННЫХ ═══
 def init_db():
@@ -810,7 +826,7 @@ async def check_new_jobs(bot) -> int:
 
     logger.info(f"📦 Всего найдено: {len(all_jobs)}")
     sent = 0
-    for job in all_jobs[:4]:
+    for job in relevant[:6]:  # До 6 заказов за раз
         try:
             save_job(job)
             analysis = await analyze_job(job)
