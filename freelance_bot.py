@@ -158,52 +158,56 @@ RU_RSS_FEEDS = [
 
 # ═══ МЕЖДУНАРОДНЫЕ БИРЖИ ═══
 EN_RSS_FEEDS = [
-    # PeoplePerHour — работает
     ("https://www.peopleperhour.com/jobs/rss", "🔵 PeoplePerHour"),
     ("https://www.peopleperhour.com/jobs/rss?service=writing", "🔵 PPH/Writing"),
     ("https://www.peopleperhour.com/jobs/rss?service=translation", "🔵 PPH/Translation"),
-    ("https://www.peopleperhour.com/jobs/rss?service=data-entry", "🔵 PPH/Data"),
 ]
 
 async def parse_guru_direct(client) -> list:
-    """Парсим Guru.com напрямую через страницу заказов"""
+    """Парсим Guru.com через правильные URL"""
     jobs = []
     urls = [
-        "https://www.guru.com/d/jobs/q/data+entry/",
-        "https://www.guru.com/d/jobs/q/translation/",
-        "https://www.guru.com/d/jobs/q/writing/",
-        "https://www.guru.com/d/jobs/q/research/",
-        "https://www.guru.com/d/jobs/q/transcription/",
+        "https://www.guru.com/d/jobs/?skill=data-entry",
+        "https://www.guru.com/d/jobs/?skill=translation",
+        "https://www.guru.com/d/jobs/?skill=writing",
+        "https://www.guru.com/d/jobs/?skill=research",
+        "https://www.guru.com/d/jobs/?skill=transcription",
+        "https://www.guru.com/d/jobs/?skill=copywriting",
     ]
     for url in urls:
         try:
             r = await client.get(url, headers=HEADERS)
+            logger.info(f"Guru URL {url[-30:]}: {r.status_code}")
             if r.status_code != 200:
                 continue
             
-            # Ищем заказы в HTML
-            titles = re.findall(r'class="jobRecord__title[^"]*"[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>([^<]+)', r.text)
-            budgets = re.findall(r'class="jobRecord__budget[^"]*"[^>]*>([^<]+)', r.text)
+            # Ищем заказы в HTML по разным паттернам
+            # Паттерн 1: ссылки на заказы
+            links = re.findall(r'href="(/d/jobs/[^"]+)"', r.text)
+            titles_raw = re.findall(r'<h2[^>]*class="[^"]*jobRecord[^"]*"[^>]*>(.*?)</h2>', r.text, re.DOTALL)
+            if not titles_raw:
+                titles_raw = re.findall(r'class="jobTitle[^"]*"[^>]*>(.*?)</[^>]+>', r.text, re.DOTALL)
             
-            for i, (link, title) in enumerate(titles[:5]):
-                full_url = f"https://www.guru.com{link}" if link.startswith('/') else link
+            for i, link in enumerate(links[:5]):
+                full_url = f"https://www.guru.com{link}"
                 if is_seen(full_url):
                     continue
-                budget = budgets[i].strip() if i < len(budgets) else "По договорённости"
-                title = title.strip()
-                if is_relevant(title, "", budget):
-                    jobs.append({
-                        'id': make_id(full_url), 'title': title[:200],
-                        'description': title, 'budget': budget,
-                        'url': full_url, 'source': '🟠 Guru.com',
-                        'status': 'found',
-                        'created_at': datetime.now().isoformat(),
-                        'updated_at': datetime.now().isoformat()
-                    })
+                title = clean_html(titles_raw[i]) if i < len(titles_raw) else link.split('/')[-1].replace('-', ' ')
+                if not title or len(title) < 5:
+                    continue
+                jobs.append({
+                    'id': make_id(full_url), 'title': title[:200],
+                    'description': title, 'budget': "По договорённости",
+                    'url': full_url, 'source': '🟠 Guru.com',
+                    'status': 'found',
+                    'created_at': datetime.now().isoformat(),
+                    'updated_at': datetime.now().isoformat()
+                })
                 mark_seen(full_url)
-            logger.info(f"✅ Guru.com: {len(jobs)} заказов из {url}")
         except Exception as e:
-            logger.error(f"❌ Guru.com: {e}")
+            logger.error(f"❌ Guru.com {url[-20:]}: {e}")
+    
+    logger.info(f"Guru.com итого: {len(jobs)}")
     return jobs
 
 # ═══ TELEGRAM КАНАЛЫ С ЗАКАЗАМИ ═══
