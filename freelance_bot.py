@@ -166,14 +166,53 @@ RU_RSS_FEEDS = [
 
 # ═══ МЕЖДУНАРОДНЫЕ БИРЖИ ═══
 EN_RSS_FEEDS = [
-    ("https://www.guru.com/jobs/rss/", "🟠 Guru.com"),
-    ("https://www.guru.com/jobs/rss/?skill=data-entry", "🟠 Guru/Data"),
-    ("https://www.guru.com/jobs/rss/?skill=translation", "🟠 Guru/Translation"),
-    ("https://www.guru.com/jobs/rss/?skill=writing", "🟠 Guru/Writing"),
+    # PeoplePerHour — работает
     ("https://www.peopleperhour.com/jobs/rss", "🔵 PeoplePerHour"),
     ("https://www.peopleperhour.com/jobs/rss?service=writing", "🔵 PPH/Writing"),
     ("https://www.peopleperhour.com/jobs/rss?service=translation", "🔵 PPH/Translation"),
+    ("https://www.peopleperhour.com/jobs/rss?service=data-entry", "🔵 PPH/Data"),
 ]
+
+async def parse_guru_direct(client) -> list:
+    """Парсим Guru.com напрямую через страницу заказов"""
+    jobs = []
+    urls = [
+        "https://www.guru.com/d/jobs/q/data+entry/",
+        "https://www.guru.com/d/jobs/q/translation/",
+        "https://www.guru.com/d/jobs/q/writing/",
+        "https://www.guru.com/d/jobs/q/research/",
+        "https://www.guru.com/d/jobs/q/transcription/",
+    ]
+    for url in urls:
+        try:
+            r = await client.get(url, headers=HEADERS)
+            if r.status_code != 200:
+                continue
+            
+            # Ищем заказы в HTML
+            titles = re.findall(r'class="jobRecord__title[^"]*"[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>([^<]+)', r.text)
+            budgets = re.findall(r'class="jobRecord__budget[^"]*"[^>]*>([^<]+)', r.text)
+            
+            for i, (link, title) in enumerate(titles[:5]):
+                full_url = f"https://www.guru.com{link}" if link.startswith('/') else link
+                if is_seen(full_url):
+                    continue
+                budget = budgets[i].strip() if i < len(budgets) else "По договорённости"
+                title = title.strip()
+                if is_relevant(title, "", budget):
+                    jobs.append({
+                        'id': make_id(full_url), 'title': title[:200],
+                        'description': title, 'budget': budget,
+                        'url': full_url, 'source': '🟠 Guru.com',
+                        'status': 'found',
+                        'created_at': datetime.now().isoformat(),
+                        'updated_at': datetime.now().isoformat()
+                    })
+                mark_seen(full_url)
+            logger.info(f"✅ Guru.com: {len(jobs)} заказов из {url}")
+        except Exception as e:
+            logger.error(f"❌ Guru.com: {e}")
+    return jobs
 
 # ═══ TELEGRAM КАНАЛЫ С ЗАКАЗАМИ ═══
 TG_CHANNELS = [
@@ -716,12 +755,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 *Полифан на связи!*\n\n"
-        "Мониторю сразу 6 источников:\n"
+        "Мониторю сразу 7 источников:\n"
         "🇷🇺 FL.ru\n"
         "🇷🇺 Freelance.ru\n"
         "🇷🇺 Work-zilla.com\n"
         "🇷🇺 Kwork.ru\n"
-        "🟠 Guru.com\n"
+        "🟠 Guru.com (прямой парсинг)\n"
         "🔵 PeoplePerHour\n"
         "📱 Telegram каналы\n\n"
         "Проверка каждые 15 минут!\n\n"
@@ -761,6 +800,7 @@ async def check_new_jobs(bot) -> int:
         results = await asyncio.gather(
             parse_rss_feeds(client, RU_RSS_FEEDS),
             parse_rss_feeds(client, EN_RSS_FEEDS),
+            parse_guru_direct(client),
             parse_telegram_channels(client),
             return_exceptions=True
         )
