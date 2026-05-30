@@ -84,6 +84,8 @@ BLACKLIST = [
     "wordpress developer", "shopify developer", "api integration",
     "верстка", "вёрстка", "верстальщик", "html", "css", "javascript",
     "сайт под ключ", "создание сайта", "разработка сайта",
+    "чертёж", "чертеж", "autocad", "solidworks", "sketchup", "конструктор",
+    "3д модел", "проектирование", "архитектур",
     # Видео/Аудио
     "video edit", "видеомонтаж", "монтаж видео", "animation", "анимация",
     "after effects", "premiere", "motion", "3d", "render",
