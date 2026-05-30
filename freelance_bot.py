@@ -79,6 +79,12 @@ BLACKLIST = [
     "tax form", "irs form", "penalty relief",
     "допечатная", "indesign",
     "50 000", "100 000",
+    # Вакансии на постоянную работу
+    "director of", "head of", "chief ", "vp of",
+    "full-time", "full time", "we are hiring",
+    "job opening", "hiring now", "permanent position",
+    "директор", "руководитель отдела", "коммерческий директор",
+    "operations manager", "commercial operations",
 ]
 
 MAX_BUDGET_RUB = 15000
