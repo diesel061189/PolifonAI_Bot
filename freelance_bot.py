@@ -38,25 +38,18 @@ def get_headers():
 
 # RSS фиды которые работают с облачных серверов
 RSS_FEEDS = [
-    # FL.ru — иногда работает с разными UA
+    # FL.ru — работает! 60+ записей
     ("https://www.fl.ru/rss/all.xml", "🇷🇺 FL.ru"),
     ("https://www.fl.ru/rss/all.xml?category=2", "🇷🇺 FL.ru/Тексты"),
     ("https://www.fl.ru/rss/all.xml?category=21", "🇷🇺 FL.ru/Переводы"),
-    # Хабр Фриланс — часто открыт
-    ("https://freelance.habr.com/tasks.rss", "🟣 Хабр Фриланс"),
-    ("https://freelance.habr.com/tasks.rss?q=перевод", "🟣 Хабр/Переводы"),
-    ("https://freelance.habr.com/tasks.rss?q=копирайтинг", "🟣 Хабр/Копирайтинг"),
-    ("https://freelance.habr.com/tasks.rss?q=текст", "🟣 Хабр/Тексты"),
-    # Remote.co RSS
-    ("https://remote.co/remote-jobs/writer/feed/", "🌍 Remote.co/Writer"),
-    ("https://remote.co/remote-jobs/translator/feed/", "🌍 Remote.co/Translator"),
-    # We Work Remotely RSS
-    ("https://weworkremotely.com/categories/remote-writing-jobs.rss", "🌍 WWR/Writing"),
-    ("https://weworkremotely.com/categories/remote-jobs.rss", "🌍 WWR/All"),
-    # ProBlogger Jobs
-    ("https://problogger.com/jobs/feed/", "🌍 ProBlogger"),
-    # Freelance Writing Jobs
-    ("https://www.freelancewritinggigs.com/feed/", "🌍 FreelanceWriting"),
+    ("https://www.fl.ru/rss/all.xml?category=19", "🇷🇺 FL.ru/Данные"),
+    # We Work Remotely — правильный URL
+    ("https://weworkremotely.com/remote-jobs.rss", "🌍 WWR"),
+    # Remote OK
+    ("https://remoteok.com/remote-jobs.rss", "🌍 RemoteOK"),
+    # Jobicy
+    ("https://jobicy.com/?feed=job_feed&job_categories=writing", "🌍 Jobicy/Writing"),
+    ("https://jobicy.com/?feed=job_feed&job_categories=marketing", "🌍 Jobicy/Marketing"),
 ]
 
 # Белый список
@@ -561,6 +554,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/stats — статистика",
         parse_mode='Markdown')
 
+async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM seen_jobs')
+    conn.commit()
+    conn.close()
+    await update.message.reply_text("🗑️ Кэш очищен! Напиши /scan — найдёт всё заново.")
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 *Полифан на связи!*\n\n"
@@ -640,6 +641,7 @@ def main():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("scan", scan_command))
+    app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
