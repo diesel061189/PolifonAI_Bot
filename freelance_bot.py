@@ -322,6 +322,13 @@ BLACKLIST = [
     "seo specialist", "smm manager",
     # Крупные бюджеты в названии
     "50 000", "100 000", "150 000", "200 000",
+    # Полиграфия
+    "допечатная", "раскладка макет", "indesign", "верстка макет",
+    "широкоформатная печать", "полиграфия",
+    # Юридические документы
+    "tax form", "irs form", "penalty relief", "tax filing",
+    "legal document", "court filing", "юридический документ",
+    "налоговая декларация", "судебный",
 ]
 
 MAX_BUDGET_RUB = 15000
@@ -642,6 +649,8 @@ async def send_job_card(bot, job: dict, analysis: dict):
     keyboard = [[
         InlineKeyboardButton("✅ Берём!", callback_data=f"take_{job['id']}"),
         InlineKeyboardButton("❌ Пропустить", callback_data=f"skip_{job['id']}")
+    ],[
+        InlineKeyboardButton("🚫 Не наш заказ", callback_data=f"notours_{job['id']}")
     ]]
     await bot.send_message(
         chat_id=YOUR_CHAT_ID, text=msg,
@@ -762,6 +771,37 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("redo_"):
         await query.edit_message_text("✏️ Напиши что исправить:")
+
+    elif data.startswith("notours_"):
+        job_id = data[8:]
+        job = get_job(job_id)
+        update_job(job_id, 'skipped')
+        
+        # Спрашиваем почему — чтобы улучшить фильтр
+        keyboard = [[
+            InlineKeyboardButton("🎨 Нужны спец. программы", callback_data=f"reason_soft_{job_id}"),
+            InlineKeyboardButton("⚖️ Юридика/медицина", callback_data=f"reason_legal_{job_id}")
+        ],[
+            InlineKeyboardButton("💻 Сложная разработка", callback_data=f"reason_dev_{job_id}"),
+            InlineKeyboardButton("🎬 Видео/аудио/дизайн", callback_data=f"reason_media_{job_id}")
+        ]]
+        await query.edit_message_text(
+            f"🚫 Понял, не наш!\n\nПочему? (поможет улучшить фильтр)",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    elif data.startswith("reason_"):
+        parts = data.split("_", 2)
+        reason = parts[1] if len(parts) > 1 else "other"
+        reasons = {
+            "soft": "специальные программы",
+            "legal": "юридика/медицина",
+            "dev": "сложная разработка",
+            "media": "видео/аудио/дизайн"
+        }
+        await query.edit_message_text(
+            f"✅ Записал! Причина: {reasons.get(reason, 'другое')}\n\nФильтр будет улучшен 📊"
+        )
 
 # ═══ КОМАНДЫ ═══
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
