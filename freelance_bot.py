@@ -19,6 +19,128 @@ YOUR_CHAT_ID = int(os.getenv("YOUR_CHAT_ID", "0"))
 LILU_CHAT_ID = int(os.getenv("LILU_CHAT_ID", "0"))
 DB_PATH = os.getenv("DB_PATH", "/tmp/freelance.db")
 
+# FL.ru авторизация
+FL_PHPSESSID = os.getenv("FL_PHPSESSID", "")
+FL_XSRF_TOKEN = os.getenv("FL_XSRF_TOKEN", "")
+
+FL_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "ru-RU,ru;q=0.9",
+    "X-XSRF-TOKEN": FL_XSRF_TOKEN,
+    "Referer": "https://www.fl.ru/",
+    "Origin": "https://www.fl.ru",
+}
+
+FL_COOKIES = {
+    "PHPSESSID": FL_PHPSESSID,
+    "XSRF-TOKEN": FL_XSRF_TOKEN,
+}
+
+# ═══ FL.RU АВТООТКЛИК ═══
+async def fl_apply_to_job(job_url: str, proposal_text: str) -> bool:
+    """Подаёт отклик на заказ FL.ru"""
+    if not FL_PHPSESSID:
+        logger.info("FL.ru токены не настроены — пропускаем автоотклик")
+        return False
+    
+    try:
+        # Извлекаем ID заказа из URL
+        # URL вида: https://www.fl.ru/projects/12345/...
+        job_id_match = re.search(r'/projects/(\d+)/', job_url)
+        if not job_id_match:
+            logger.error(f"Не удалось извлечь ID заказа из {job_url}")
+            return False
+        
+        job_id = job_id_match.group(1)
+        
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            # Отправляем отклик через API FL.ru
+            r = await client.post(
+                f"https://www.fl.ru/api/project/{job_id}/bid/",
+                headers=FL_HEADERS,
+                cookies=FL_COOKIES,
+                json={
+                    "description": proposal_text,
+                    "cost": "",
+                    "term": "1",
+                    "term_type": "day"
+                }
+            )
+            
+            logger.info(f"FL.ru отклик статус: {r.status_code}")
+            
+            if r.status_code in [200, 201]:
+                logger.info(f"✅ Отклик успешно отправлен на заказ {job_id}")
+                return True
+            else:
+                logger.error(f"❌ Ошибка отклика FL.ru: {r.status_code} {r.text[:200]}")
+                return False
+                
+    except Exception as e:
+        logger.error(f"Ошибка FL.ru автоотклика: {e}")
+        return False
+
+async def fl_send_result(job_url: str, result_text: str) -> bool:
+    """Отправляет готовую работу клиенту через FL.ru"""
+    if not FL_PHPSESSID:
+        return False
+    
+    try:
+        job_id_match = re.search(r'/projects/(\d+)/', job_url)
+        if not job_id_match:
+            return False
+        
+        job_id = job_id_match.group(1)
+        
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            # Находим ID чата с заказчиком
+            r = await client.get(
+                f"https://www.fl.ru/api/project/{job_id}/",
+                headers=FL_HEADERS,
+                cookies=FL_COOKIES
+            )
+            
+            if r.status_code == 200:
+                data = r.json()
+                # Отправляем сообщение в чат заказа
+                chat_r = await client.post(
+                    f"https://www.fl.ru/api/project/{job_id}/message/",
+                    headers=FL_HEADERS,
+                    cookies=FL_COOKIES,
+                    json={"message": result_text}
+                )
+                logger.info(f"FL.ru отправка результата: {chat_r.status_code}")
+                return chat_r.status_code in [200, 201]
+    except Exception as e:
+        logger.error(f"Ошибка отправки результата FL.ru: {e}")
+        return False
+
+async def fl_close_job(job_url: str) -> bool:
+    """Закрывает заказ как выполненный"""
+    if not FL_PHPSESSID:
+        return False
+    
+    try:
+        job_id_match = re.search(r'/projects/(\d+)/', job_url)
+        if not job_id_match:
+            return False
+        
+        job_id = job_id_match.group(1)
+        
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            r = await client.post(
+                f"https://www.fl.ru/api/project/{job_id}/complete/",
+                headers=FL_HEADERS,
+                cookies=FL_COOKIES,
+                json={"status": "complete"}
+            )
+            logger.info(f"FL.ru закрытие заказа: {r.status_code}")
+            return r.status_code in [200, 201]
+    except Exception as e:
+        logger.error(f"Ошибка закрытия FL.ru: {e}")
+        return False
+
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
     "Accept": "application/rss+xml, application/xml, text/xml, */*",
@@ -431,6 +553,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ *Берём!*\n{job['source']}\n📌 {job['title'][:80]}\n\n⏳ Выполняю...",
             parse_mode='Markdown'
         )
+        
+        # Автоотклик на FL.ru
+        if "fl.ru" in job.get('source','').lower() and FL_PHPSESSID:
+            proposal = job.get('proposal', f"Здравствуйте! Готов выполнить ваш заказ качественно и в срок. Артём")
+            fl_ok = await fl_apply_to_job(job['url'], proposal)
+            if fl_ok:
+                await context.bot.send_message(
+                    chat_id=YOUR_CHAT_ID,
+                    text="📨 *Отклик автоматически отправлен на FL.ru!*",
+                    parse_mode='Markdown'
+                )
+        
         try:
             result = await execute_job(job)
             update_job(job_id, 'completed', result)
@@ -473,7 +607,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         job_id = data[5:]
         job = get_job(job_id)
         update_job(job_id, 'done')
-        # Считаем бюджет
         nums = re.findall(r'\d+', job.get('budget','0').replace(' ',''))
         amount = float(nums[0]) if nums else 0
         is_rub = '₽' in job.get('budget','') or 'руб' in job.get('budget','').lower()
@@ -482,13 +615,37 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             save_earning(job_id, amount, amount*90, job['title'])
         stats = get_stats()
-        await query.edit_message_text(
-            f"💰 *ЗАКАЗ ЗАКРЫТ!*\n\n"
-            f"✅ Выполнено всего: {stats['by_status'].get('done',0)}\n"
-            f"💵 Заработано: ${stats['earn_usd']:.2f} / ₽{stats['earn_rub']:.0f}\n\n"
-            f"Бухгалтер записал 📊",
-            parse_mode='Markdown'
-        )
+
+        # Автоматически отправляем результат и закрываем на FL.ru
+        if "fl.ru" in job.get('source','').lower() and FL_PHPSESSID and job.get('result'):
+            await query.edit_message_text("📤 Отправляю результат клиенту на FL.ru...")
+            
+            sent = await fl_send_result(job['url'], job['result'])
+            closed = await fl_close_job(job['url'])
+            
+            fl_status = ""
+            if sent:
+                fl_status += "✅ Результат отправлен клиенту\n"
+            if closed:
+                fl_status += "🏁 Заказ закрыт на FL.ru\n"
+                fl_status += "💳 Деньги придут на ЮMoney после подтверждения"
+            
+            await query.edit_message_text(
+                f"💰 *ЗАКАЗ ЗАКРЫТ!*\n\n"
+                f"✅ Выполнено: {stats['by_status'].get('done',0)}\n"
+                f"💵 Заработано: ${stats['earn_usd']:.2f} / ₽{stats['earn_rub']:.0f}\n\n"
+                f"{fl_status}\n"
+                f"Бухгалтер записал 📊",
+                parse_mode='Markdown'
+            )
+        else:
+            await query.edit_message_text(
+                f"💰 *ЗАКАЗ ЗАКРЫТ!*\n\n"
+                f"✅ Выполнено: {stats['by_status'].get('done',0)}\n"
+                f"💵 Заработано: ${stats['earn_usd']:.2f} / ₽{stats['earn_rub']:.0f}\n\n"
+                f"Бухгалтер записал 📊",
+                parse_mode='Markdown'
+            )
 
     elif data.startswith("redo_"):
         await query.edit_message_text("✏️ Напиши что исправить:")
