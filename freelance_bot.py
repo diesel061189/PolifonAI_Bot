@@ -82,16 +82,22 @@ BLACKLIST = [
     "react", "angular", "node", "python developer", "django", "flask",
     "mobile app", "android", "ios", "web app", "backend", "frontend",
     "wordpress developer", "shopify developer", "api integration",
+    "верстка", "вёрстка", "верстальщик", "html", "css", "javascript",
+    "сайт под ключ", "создание сайта", "разработка сайта",
     # Видео/Аудио
     "video edit", "видеомонтаж", "монтаж видео", "animation", "анимация",
     "after effects", "premiere", "motion", "3d", "render",
     "audio mixing", "звукозапись", "музыка", "music production",
+    "короткие видео", "вертикальн", "reels", "tiktok video",
+    "аниме", "мультфильм", "нарисовать",
     # Сложный дизайн
     "logo design", "логотип", "brand identity", "ui/ux", "ui design",
-    "illustration", "иллюстрация", "3d model",
+    "illustration", "иллюстрация", "3d model", "баннер",
     # Реклама
     "google ads", "facebook ads", "таргет", "яндекс директ",
     "seo specialist", "smm manager",
+    # Крупные бюджеты в названии
+    "50 000", "100 000", "150 000", "200 000",
 ]
 
 MAX_BUDGET_RUB = 15000
