@@ -22,8 +22,6 @@ FL_PHPSESSID    = os.getenv("FL_PHPSESSID", "")
 FL_XSRF_TOKEN   = os.getenv("FL_XSRF_TOKEN", "")
 KWORK_URL       = os.getenv("KWORK_URL", "https://kwork.ru/user/artem_sh")
 
-# ═══ НАВЫКИ ПОЛИФАНА ═══
-
 POLYFAN_SKILLS = """Полифан умеет делать:
 - Тексты, статьи, блог-посты (EN/RU)
 - Копирайтинг и рерайтинг
@@ -200,60 +198,41 @@ async def parse_rss(client) -> list:
 # ═══ ОТПРАВКА ЛИЛЕ ═══
 
 async def send_to_lilu(bot, job: dict):
-    """
-    Полифан отправляет заказ Лиле в её чат.
-    Лила его анализирует и решает — пропустить или нет.
-    """
     job_with_source = dict(job)
     job_with_source['source_bot'] = 'Полифан'
-
     payload = json.dumps(job_with_source, ensure_ascii=False)
-    msg     = f"🤖JOB:{payload}"
-
+    msg = f"🤖JOB:{payload}"
     try:
-        await bot.send_message(
-            chat_id=LILU_CHAT_ID,
-            text=msg[:4000]
-        )
+        await bot.send_message(chat_id=LILU_CHAT_ID, text=msg[:4000])
         logger.info(f"📨 Полифан → Лила: {job.get('title','')[:50]}")
     except Exception as e:
         logger.error(f"❌ Ошибка отправки Лиле: {e}")
 
 async def scan_and_send(bot) -> int:
-    """Сканируем заказы и шлём Лиле"""
     count = 0
     async with httpx.AsyncClient() as client:
         jobs = await parse_rss(client)
-
     for job in jobs:
         save_job(job)
         await send_to_lilu(bot, job)
         count += 1
-        await asyncio.sleep(2)  # пауза между отправками
-
+        await asyncio.sleep(2)
     return count
 
 # ═══ ВЫПОЛНЕНИЕ ЗАКАЗА ═══
 
 async def execute_job(job: dict) -> str:
     prompt = f"""Выполни фриланс-заказ профессионально.
-
 ЗАКАЗ: {job['title']}
 ОПИСАНИЕ: {job['description'][:800]}
-
-Напиши качественный результат на языке заказа.
-Если заказ на английском — отвечай по-английски.
-Если на русском — по-русски."""
-
+Напиши качественный результат на языке заказа."""
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": "llama-3.3-70b-versatile",
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 2000
-            }
+            json={"model": "llama-3.3-70b-versatile",
+                  "messages": [{"role": "user", "content": prompt}],
+                  "max_tokens": 2000}
         )
         return r.json()["choices"][0]["message"]["content"].strip()
 
@@ -261,7 +240,6 @@ async def execute_job(job: dict) -> str:
 
 async def fl_apply(job_url: str, proposal: str) -> bool:
     if not FL_PHPSESSID or not FL_XSRF_TOKEN:
-        logger.warning("FL cookies не заданы — автоотклик недоступен")
         return False
     try:
         project_id_m = re.search(r'/projects/(\d+)/', job_url)
@@ -288,7 +266,7 @@ async def fl_apply(job_url: str, proposal: str) -> bool:
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    data  = query.data
+    data = query.data
 
     if data == "team_skills":
         await query.edit_message_text(
@@ -300,11 +278,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📱 Посты для соцсетей\n"
             "✅ Корректура и редактура\n\n"
             "🔍 Ищу заказы на:\n"
-            "• FL.ru (RSS)\n"
-            "• RemoteOK\n"
-            "• Jobicy\n"
-            "• WWR (We Work Remotely)\n\n"
-            "📤 Все заказы сначала идут через *Лилу* — она переводит и фильтрует!",
+            "• FL.ru (RSS)\n• RemoteOK\n• Jobicy\n• WWR\n\n"
+            "📤 Все заказы идут через *Лилу* — она фильтрует!",
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("◀️ Назад", callback_data="back_main")
@@ -319,9 +294,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             " • Описание для сайта: от 400₽\n"
             " • Перевод EN↔RU: от 300₽\n\n"
             "📦 *Карточки WB/Ozon/ЯМ*\n"
-            " • Эконом: 400₽\n"
-            " • Стандарт: 1200₽\n"
-            " • Бизнес: 2000₽\n\n"
+            " • Эконом: 400₽\n • Стандарт: 1200₽\n • Бизнес: 2000₽\n\n"
             f"🔗 [Все кворки на Kwork]({KWORK_URL})",
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([[
@@ -342,14 +315,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             count = await scan_and_send(query.get_bot())
             await query.edit_message_text(
-                f"✅ Нашёл и отправил Лиле: *{count}* заказов\n\n"
-                f"Лила сейчас анализирует — лучшие придут тебе!",
+                f"✅ Нашёл и отправил Лиле: *{count}* заказов\n\nЛила анализирует — лучшие придут тебе!",
                 parse_mode='Markdown',
                 reply_markup=_main_keyboard()
             )
         except Exception as e:
             await query.edit_message_text(
-                f"❌ Ошибка сканирования: {str(e)[:100]}",
+                f"❌ Ошибка: {str(e)[:100]}",
                 reply_markup=_main_keyboard()
             )
 
@@ -369,19 +341,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data.startswith("done_"):
-        job_id = data[5:]
-        update_job(job_id, 'done')
+        update_job(data[5:], 'done')
         await query.edit_message_text("💰 Заказ закрыт! Молодцы 🎉")
 
     elif data.startswith("redo_"):
         job_id = data[5:]
         context.user_data['redo_job_id'] = job_id
         job = get_job(job_id)
-        context.user_data['redo_result'] = job.get('result','') if job else ''
-        await query.edit_message_text(
-            "✏️ *Напиши что исправить:*",
-            parse_mode='Markdown'
-        )
+        context.user_data['redo_result'] = job.get('result', '') if job else ''
+        await query.edit_message_text("✏️ *Напиши что исправить:*", parse_mode='Markdown')
 
 # ═══ ГЛАВНОЕ МЕНЮ ═══
 
@@ -407,11 +375,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg   = await update.message.reply_text("🔍 Ищу заказы и отправляю Лиле...")
+    msg = await update.message.reply_text("🔍 Ищу заказы и отправляю Лиле...")
     count = await scan_and_send(context.application.bot)
     await msg.edit_text(
-        f"✅ Нашёл и отправил Лиле: *{count}* заказов\n\n"
-        f"Лила сейчас анализирует — лучшие придут тебе!",
+        f"✅ Нашёл и отправил Лиле: *{count}* заказов\n\nЛила анализирует — лучшие придут тебе!",
         parse_mode='Markdown'
     )
 
@@ -483,37 +450,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
         return
-
     await update.message.reply_text(
         "Используй команды или кнопки меню 👇",
         reply_markup=_main_keyboard()
     )
 
-# ═══ АВТОСКАНИРОВАНИЕ ═══
+# ═══ АВТОСКАНИРОВАНИЕ ЧЕРЕЗ ASYNCIO (без JobQueue!) ═══
 
-async def auto_scan(context):
-    logger.info("🔄 Полифан: автосканирование...")
-    try:
-        count = await scan_and_send(context.bot)
-        logger.info(f"✅ Полифан → Лила: {count} заказов")
-        if count > 0 and YOUR_CHAT_ID:
-            await context.bot.send_message(
-                chat_id=YOUR_CHAT_ID,
-                text=f"🔍 *Полифан нашёл {count} заказов* — отправил Лиле на проверку!",
-                parse_mode='Markdown'
-            )
-    except Exception as e:
-        logger.error(f"❌ Автосканирование: {e}")
+async def auto_scan_loop(bot):
+    """Бесконечный цикл — каждые 30 минут. Не требует APScheduler."""
+    await asyncio.sleep(90)  # первый запуск через 90 сек
+    while True:
+        logger.info("🔄 Полифан: автосканирование...")
+        try:
+            count = await scan_and_send(bot)
+            logger.info(f"✅ Полифан → Лила: {count} заказов")
+            if count > 0 and YOUR_CHAT_ID:
+                await bot.send_message(
+                    chat_id=YOUR_CHAT_ID,
+                    text=f"🔍 *Полифан нашёл {count} заказов* — отправил Лиле на проверку!",
+                    parse_mode='Markdown'
+                )
+        except Exception as e:
+            logger.error(f"❌ Автосканирование: {e}")
+        await asyncio.sleep(1800)  # ждём 30 минут
 
 # ═══ ЗАПУСК ═══
 
 def main():
     init_db()
-    app = (
-        Application.builder()
-        .token(TELEGRAM_TOKEN)
-        .build()
-    )
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start",  start_command))
     app.add_handler(CommandHandler("scan",   scan_command))
@@ -524,14 +490,10 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # ─── Автосканирование каждые 30 минут ───
-    if app.job_queue:
-        app.job_queue.run_repeating(auto_scan, interval=1800, first=90)
-        logger.info("✅ JobQueue запущен — автосканирование каждые 30 мин")
-    else:
-        logger.warning("⚠️ JobQueue недоступен — используй /scan вручную")
-
     async def post_init(application):
+        # ✅ Запускаем автосканирование как фоновую задачу asyncio — без APScheduler!
+        asyncio.create_task(auto_scan_loop(application.bot))
+        logger.info("✅ Автосканирование запущено через asyncio")
         try:
             if YOUR_CHAT_ID:
                 await application.bot.send_message(
