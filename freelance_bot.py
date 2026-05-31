@@ -74,6 +74,13 @@ def init_db():
         created_at TEXT, updated_at TEXT
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS seen_jobs (url TEXT PRIMARY KEY, seen_at TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS earnings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        amount_usd REAL DEFAULT 0,
+        amount_rub REAL DEFAULT 0,
+        description TEXT,
+        created_at TEXT
+    )''')
     conn.commit()
     conn.close()
 
@@ -330,6 +337,37 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=_main_keyboard()
         )
 
+    elif data == "do_scan":
+        await query.edit_message_text("🔍 Ищу заказы и отправляю Лиле...")
+        try:
+            count = await scan_and_send(query.get_bot())
+            await query.edit_message_text(
+                f"✅ Нашёл и отправил Лиле: *{count}* заказов\n\n"
+                f"Лила сейчас анализирует — лучшие придут тебе!",
+                parse_mode='Markdown',
+                reply_markup=_main_keyboard()
+            )
+        except Exception as e:
+            await query.edit_message_text(
+                f"❌ Ошибка сканирования: {str(e)[:100]}",
+                reply_markup=_main_keyboard()
+            )
+
+    elif data == "do_stats":
+        stats = get_stats()
+        await query.edit_message_text(
+            f"📊 *Статистика Полифана*\n\n"
+            f"🔍 Найдено: {stats.get('found', 0)}\n"
+            f"✅ Принято: {stats.get('accepted', 0)}\n"
+            f"✨ Выполнено: {stats.get('completed', 0)}\n"
+            f"💰 Закрыто: {stats.get('done', 0)}\n"
+            f"⏭ Пропущено: {stats.get('skipped', 0)}",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("◀️ Назад", callback_data="back_main")
+            ]])
+        )
+
     elif data.startswith("done_"):
         job_id = data[5:]
         update_job(job_id, 'done')
@@ -349,8 +387,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def _main_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🧠 Что умею",    callback_data="team_skills"),
-         InlineKeyboardButton("🛍️ Наши кворки", callback_data="kwork_menu")],
+        [InlineKeyboardButton("🧠 Что умею",     callback_data="team_skills"),
+         InlineKeyboardButton("🛍️ Наши кворки",  callback_data="kwork_menu")],
         [InlineKeyboardButton("🔍 Найти заказы", callback_data="do_scan"),
          InlineKeyboardButton("📊 Статистика",   callback_data="do_stats")],
     ])
@@ -458,6 +496,12 @@ async def auto_scan(context):
     try:
         count = await scan_and_send(context.bot)
         logger.info(f"✅ Полифан → Лила: {count} заказов")
+        if count > 0 and YOUR_CHAT_ID:
+            await context.bot.send_message(
+                chat_id=YOUR_CHAT_ID,
+                text=f"🔍 *Полифан нашёл {count} заказов* — отправил Лиле на проверку!",
+                parse_mode='Markdown'
+            )
     except Exception as e:
         logger.error(f"❌ Автосканирование: {e}")
 
@@ -465,7 +509,11 @@ async def auto_scan(context):
 
 def main():
     init_db()
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(TELEGRAM_TOKEN)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start",  start_command))
     app.add_handler(CommandHandler("scan",   scan_command))
@@ -476,10 +524,36 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    app.job_queue.run_repeating(auto_scan, interval=1800, first=90)
+    # ─── Автосканирование каждые 30 минут ───
+    if app.job_queue:
+        app.job_queue.run_repeating(auto_scan, interval=1800, first=90)
+        logger.info("✅ JobQueue запущен — автосканирование каждые 30 мин")
+    else:
+        logger.warning("⚠️ JobQueue недоступен — используй /scan вручную")
+
+    async def post_init(application):
+        try:
+            if YOUR_CHAT_ID:
+                await application.bot.send_message(
+                    chat_id=YOUR_CHAT_ID,
+                    text=(
+                        "🤖 *Полифан запущен!*\n\n"
+                        "✅ Автосканирование каждые 30 мин\n"
+                        "📨 Заказы идут через Лилу\n\n"
+                        "/scan — найти сейчас\n"
+                        "/stats — статистика\n"
+                        "/clear — очистить кэш"
+                    ),
+                    parse_mode='Markdown'
+                )
+        except Exception as e:
+            logger.error(f"post_init: {e}")
+
+    app.post_init = post_init
 
     logger.info("🤖 Полифан запущен!")
     app.run_polling(drop_pending_updates=True)
+
 
 if __name__ == "__main__":
     main()
