@@ -199,34 +199,24 @@ async def parse_rss(client) -> list:
 # ═══ ОТПРАВКА ЛИЛЕ ═══
 
 async def send_to_lilu(bot, job: dict):
-    """Шлёт заказ через токен бота Лилы — так Лила видит и обрабатывает его"""
-    job_with_source = dict(job)
-    job_with_source['source_bot'] = 'Полифан'
-    payload = json.dumps(job_with_source, ensure_ascii=False)
-    msg = f"🤖JOB:{payload}"
-
-    # Способ 1: через токен Лилы (правильный — Лила обработает сама)
-    if LILU_BOT_TOKEN:
-        try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                r = await client.post(
-                    f"https://api.telegram.org/bot{LILU_BOT_TOKEN}/sendMessage",
-                    json={"chat_id": YOUR_CHAT_ID, "text": msg[:4000]}
-                )
-                if r.status_code == 200:
-                    logger.info(f"📨 Полифан → Лила (её токен): {job.get('title','')[:50]}")
-                    return
-                else:
-                    logger.error(f"❌ Токен Лилы ошибка {r.status_code}: {r.text[:100]}")
-        except Exception as e:
-            logger.error(f"❌ Ошибка токена Лилы: {e}")
-
-    # Способ 2: fallback — своим ботом напрямую тебе
+    """
+    Полифан сохраняет заказ в БД со статусом pending_lilu.
+    Лила сама заберёт его через опрос БД каждые 30 сек.
+    """
     try:
-        await bot.send_message(chat_id=YOUR_CHAT_ID, text=msg[:4000])
-        logger.info(f"📨 Полифан → тебе (fallback): {job.get('title','')[:50]}")
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        # Помечаем source чтобы Лила знала от кого
+        source = f"Полифан | {job.get('source', '')}"
+        c.execute(
+            "UPDATE jobs SET status='pending_lilu', source=?, updated_at=? WHERE id=?",
+            (source[:200], datetime.now().isoformat(), job['id'])
+        )
+        conn.commit()
+        conn.close()
+        logger.info(f"📨 Полифан → БД (pending_lilu): {job.get('title','')[:50]}")
     except Exception as e:
-        logger.error(f"❌ Fallback ошибка: {e}")
+        logger.error(f"❌ Ошибка записи в БД: {e}")
 
 async def scan_and_send(bot) -> int:
     count = 0
