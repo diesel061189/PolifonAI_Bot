@@ -31,8 +31,9 @@ POLYFAN_SKILLS = """Полифан умеет делать:
 - Посты для соцсетей
 - Корректура и редактура
 - Описания для маркетплейсов
+- Карточки товаров WB/Ozon/ЯМ (через Карточника)
 
-НЕ умеет: программирование, дизайн, видео, SEO-технический аудит"""
+НЕ умеем: программирование, дизайн вручную, видео, SEO-технический аудит"""
 
 RSS_FEEDS = [
     ("https://www.fl.ru/rss/all.xml", "🇷🇺 FL.ru"),
@@ -54,12 +55,57 @@ KEYWORDS = [
     "описание товара", "маркетплейс",
 ]
 
+# ─── Базовый чёрный список (не наша тема) ───
 BLACKLIST = [
     "программирование", "разработка", "верстка", "дизайн логотип",
     "видеомонтаж", "анимация", "таргет", "мобильное приложение",
     "android", "ios", "чертёж", "курсовая", "дипломная",
     "купить и отправить", "курьер", "доставить",
 ]
+
+# ─── Фильтр "без AI" — заказчик не хочет нейросети ───
+AI_REJECTION_PHRASES = [
+    # Прямой запрет AI
+    "без нейросетей", "без ии", "без ai", "no ai", "not ai",
+    "кроме ии", "кроме ai", "кроме нейросетей",
+    "не используя ии", "не используя ai",
+    "только вручную", "исключительно вручную",
+    "ai не принимается", "нейросети не принимаются",
+    "нейросеть не подходит", "нейросети не подходят",
+    # Требования к ручному инструментарию
+    "кроме инструментов ии", "без использования ии",
+    "профессиональное владение инструментарием кроме",
+    "владение photoshop обязательно", "владение illustrator обязательно",
+    "исходники psd", "psd исходники", "исходники ai",
+    # Опыт/портфолио без AI
+    "портфолио без нейросетей", "работы без ai",
+    "только реальные работы", "без использования нейросетей",
+]
+
+# ─── Слова которые повышают приоритет заказа ───
+PRIORITY_BOOST = [
+    "карточка товара", "карточки товаров",
+    "инфографика", "wildberries", "wb", "ozon", "озон", "яндекс маркет",
+    "описание товара", "seo описание", "быстро", "срочно",
+    "копирайтер нужен", "ищу копирайтера",
+]
+
+def is_ai_rejection(title: str, desc: str) -> tuple:
+    """Проверяет запрещает ли заказчик AI. Возвращает (запрещает, фраза)"""
+    text = (title + " " + desc).lower()
+    for phrase in AI_REJECTION_PHRASES:
+        if phrase.lower() in text:
+            return True, phrase
+    return False, ""
+
+def get_priority_score(title: str, desc: str) -> int:
+    """Оценивает приоритет заказа 1-10"""
+    text = (title + " " + desc).lower()
+    score = 5
+    for phrase in PRIORITY_BOOST:
+        if phrase.lower() in text:
+            score += 1
+    return min(10, score)
 
 # ═══ БД ═══
 
@@ -80,6 +126,10 @@ def init_db():
         description TEXT,
         created_at TEXT
     )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS filtered_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT, url TEXT, reason TEXT, date TEXT
+    )''')
     conn.commit()
     conn.close()
 
@@ -92,6 +142,15 @@ def save_job(job):
         (job['id'], job['title'], job['description'], job['budget'],
          job['url'], job['source'], job['status'],
          job['created_at'], job['updated_at']))
+    conn.commit()
+    conn.close()
+
+def save_filtered_job(title, url, reason):
+    """Сохраняем отфильтрованный заказ для статистики"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('INSERT INTO filtered_jobs (title, url, reason, date) VALUES (?, ?, ?, ?)',
+              (title[:200], url, reason, datetime.now().isoformat()))
     conn.commit()
     conn.close()
 
@@ -138,7 +197,10 @@ def get_stats():
     c = conn.cursor()
     c.execute('SELECT status, COUNT(*) FROM jobs GROUP BY status')
     by_status = dict(c.fetchall())
+    c.execute('SELECT COUNT(*) FROM filtered_jobs')
+    filtered_count = c.fetchone()[0]
     conn.close()
+    by_status['filtered_ai'] = filtered_count
     return by_status
 
 def clean_html(text):
@@ -160,6 +222,7 @@ def is_relevant(title, desc):
 
 async def parse_rss(client) -> list:
     jobs = []
+    filtered_count = 0
     for url, source in RSS_FEEDS:
         try:
             headers = {
@@ -179,34 +242,51 @@ async def parse_rss(client) -> list:
                     continue
                 title = clean_html(e.get('title', ''))
                 desc  = clean_html(e.get('summary', e.get('description', '')))
+
+                # ─── ФИЛЬТР 1: базовая релевантность ───
+                if not is_relevant(title, desc):
+                    continue
+
+                # ─── ФИЛЬТР 2: заказчик запрещает AI ───
+                ai_rejected, ai_phrase = is_ai_rejection(title, desc)
+                if ai_rejected:
+                    logger.info(f"🚫 Пропускаем (запрет AI): {title[:50]} — '{ai_phrase}'")
+                    save_filtered_job(title, link, f"запрет AI: {ai_phrase}")
+                    mark_seen(link)
+                    filtered_count += 1
+                    continue
+
                 budget_m = re.search(r'[\$₽€]\s?[\d\s,]+|[\d\s,]+\s?(?:руб|USD|\$|₽)', desc + title)
                 budget   = budget_m.group(0).strip() if budget_m else "Договорная"
-                if is_relevant(title, desc):
-                    jobs.append({
-                        'id': make_id(link), 'title': title[:200],
-                        'description': desc[:1200], 'budget': budget,
-                        'url': link, 'source': source,
-                        'status': 'found',
-                        'created_at': datetime.now().isoformat(),
-                        'updated_at': datetime.now().isoformat()
-                    })
-                    mark_seen(link)
+
+                # Оцениваем приоритет
+                score = get_priority_score(title, desc)
+
+                jobs.append({
+                    'id': make_id(link), 'title': title[:200],
+                    'description': desc[:1200], 'budget': budget,
+                    'url': link, 'source': source,
+                    'status': 'found',
+                    'priority': score,
+                    'created_at': datetime.now().isoformat(),
+                    'updated_at': datetime.now().isoformat()
+                })
+                mark_seen(link)
         except Exception as e:
             logger.error(f"❌ {source}: {e}")
-    logger.info(f"📋 Полифан нашёл: {len(jobs)} заказов")
+
+    # Сортируем по приоритету — сначала лучшие
+    jobs.sort(key=lambda x: x.get('priority', 5), reverse=True)
+
+    logger.info(f"📋 Полифан нашёл: {len(jobs)} заказов (отфильтровано AI-запретов: {filtered_count})")
     return jobs
 
 # ═══ ОТПРАВКА ЛИЛЕ ═══
 
 async def send_to_lilu(bot, job: dict):
-    """
-    Полифан сохраняет заказ в БД со статусом pending_lilu.
-    Лила сама заберёт его через опрос БД каждые 30 сек.
-    """
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        # Помечаем source чтобы Лила знала от кого
         source = f"Полифан | {job.get('source', '')}"
         c.execute(
             "UPDATE jobs SET status='pending_lilu', source=?, updated_at=? WHERE id=?",
@@ -287,6 +367,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🛍️ Описания товаров\n"
             "📱 Посты для соцсетей\n"
             "✅ Корректура и редактура\n\n"
+            "🚫 *Автофильтр включён:*\n"
+            "Заказы с запретом AI — пропускаем!\n\n"
             "🔍 Ищу заказы на:\n"
             "• FL.ru (RSS)\n• RemoteOK\n• Jobicy\n• WWR\n\n"
             "📤 Все заказы идут через *Лилу* — она фильтрует!",
@@ -324,8 +406,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🔍 Ищу заказы и отправляю Лиле...")
         try:
             count = await scan_and_send(query.get_bot())
+            stats = get_stats()
+            filtered = stats.get('filtered_ai', 0)
             await query.edit_message_text(
-                f"✅ Нашёл и отправил Лиле: *{count}* заказов\n\nЛила анализирует — лучшие придут тебе!",
+                f"✅ Нашёл и отправил Лиле: *{count}* заказов\n"
+                f"🚫 Отфильтровано (запрет AI): *{filtered}*\n\n"
+                f"Лила анализирует — лучшие придут тебе!",
                 parse_mode='Markdown',
                 reply_markup=_main_keyboard()
             )
@@ -343,7 +429,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Принято: {stats.get('accepted', 0)}\n"
             f"✨ Выполнено: {stats.get('completed', 0)}\n"
             f"💰 Закрыто: {stats.get('done', 0)}\n"
-            f"⏭ Пропущено: {stats.get('skipped', 0)}",
+            f"⏭ Пропущено: {stats.get('skipped', 0)}\n"
+            f"🚫 Запрет AI: {stats.get('filtered_ai', 0)}",
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("◀️ Назад", callback_data="back_main")
@@ -378,8 +465,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 *Привет! Я Полифан — фриланс-помощник!*\n\n"
         "Ищу заказы на текст/контент/переводы.\n"
         "Все заказы сначала проверяет *Лила* —\n"
-        "она переводит и решает, берём или нет.\n\n"
-        "Только лучшие заказы доходят до тебя! 🎯",
+        "она анализирует и решает, берём или нет.\n\n"
+        "🚫 *Автофильтр:* заказы с запретом AI\n"
+        "пропускаются автоматически!\n\n"
+        "Только подходящие заказы доходят до тебя! 🎯",
         parse_mode='Markdown',
         reply_markup=_main_keyboard()
     )
@@ -387,8 +476,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔍 Ищу заказы и отправляю Лиле...")
     count = await scan_and_send(context.application.bot)
+    stats = get_stats()
+    filtered = stats.get('filtered_ai', 0)
     await msg.edit_text(
-        f"✅ Нашёл и отправил Лиле: *{count}* заказов\n\nЛила анализирует — лучшие придут тебе!",
+        f"✅ Нашёл и отправил Лиле: *{count}* заказов\n"
+        f"🚫 Отфильтровано (запрет AI): *{filtered}* всего\n\n"
+        f"Лила анализирует — лучшие придут тебе!",
         parse_mode='Markdown'
     )
 
@@ -400,7 +493,8 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Принято: {stats.get('accepted', 0)}\n"
         f"✨ Выполнено: {stats.get('completed', 0)}\n"
         f"💰 Закрыто: {stats.get('done', 0)}\n"
-        f"⏭ Пропущено: {stats.get('skipped', 0)}",
+        f"⏭ Пропущено: {stats.get('skipped', 0)}\n"
+        f"🚫 Запрет AI (пропущено): {stats.get('filtered_ai', 0)}",
         parse_mode='Markdown'
     )
 
@@ -465,16 +559,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=_main_keyboard()
     )
 
-# ═══ АВТОСКАНИРОВАНИЕ ЧЕРЕЗ ASYNCIO (без JobQueue!) ═══
+# ═══ АВТОСКАНИРОВАНИЕ ═══
 
 async def auto_scan_loop(bot):
-    """Бесконечный цикл — каждые 30 минут. Не требует APScheduler."""
-    await asyncio.sleep(90)  # первый запуск через 90 сек
+    await asyncio.sleep(90)
     while True:
         logger.info("🔄 Полифан: автосканирование...")
         try:
             count = await scan_and_send(bot)
-            logger.info(f"✅ Полифан → Лила: {count} заказов")
+            stats = get_stats()
+            filtered = stats.get('filtered_ai', 0)
+            logger.info(f"✅ Полифан → Лила: {count} заказов (AI-запретов всего: {filtered})")
             if count > 0 and YOUR_CHAT_ID:
                 await bot.send_message(
                     chat_id=YOUR_CHAT_ID,
@@ -483,7 +578,7 @@ async def auto_scan_loop(bot):
                 )
         except Exception as e:
             logger.error(f"❌ Автосканирование: {e}")
-        await asyncio.sleep(1800)  # ждём 30 минут
+        await asyncio.sleep(1800)
 
 # ═══ ЗАПУСК ═══
 
@@ -501,7 +596,6 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     async def post_init(application):
-        # ✅ Запускаем автосканирование как фоновую задачу asyncio — без APScheduler!
         asyncio.create_task(auto_scan_loop(application.bot))
         logger.info("✅ Автосканирование запущено через asyncio")
         try:
@@ -511,6 +605,7 @@ def main():
                     text=(
                         "🤖 *Полифан запущен!*\n\n"
                         "✅ Автосканирование каждые 30 мин\n"
+                        "🚫 Автофильтр: заказы с запретом AI пропускаем\n"
                         "📨 Заказы идут через Лилу\n\n"
                         "/scan — найти сейчас\n"
                         "/stats — статистика\n"
@@ -522,7 +617,6 @@ def main():
             logger.error(f"post_init: {e}")
 
     app.post_init = post_init
-
     logger.info("🤖 Полифан запущен!")
     app.run_polling(drop_pending_updates=True)
 
