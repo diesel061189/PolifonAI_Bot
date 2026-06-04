@@ -29,7 +29,7 @@ GROQ_URL    = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODELS = [
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
-    "gemma2-9b-it",
+    "llama-3.1-70b-versatile",
     "mixtral-8x7b-32768",
 ]
 GROQ_MODEL       = "llama-3.3-70b-versatile"
