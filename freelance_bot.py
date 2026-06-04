@@ -6,7 +6,9 @@ import httpx
 import sqlite3
 import feedparser
 import re
-from datetime import datetime
+import random
+import pytz
+from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
@@ -22,10 +24,25 @@ FL_PHPSESSID    = os.getenv("FL_PHPSESSID", "")
 FL_XSRF_TOKEN   = os.getenv("FL_XSRF_TOKEN", "")
 KWORK_URL       = os.getenv("KWORK_URL", "https://kwork.ru/user/artem_sh")
 
-GROQ_URL        = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL      = "llama-3.3-70b-versatile"
+# ═══ GROQ — РОТАЦИЯ МОДЕЛЕЙ (НОВОЕ) ═══
+GROQ_URL    = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "gemma2-9b-it",
+    "mixtral-8x7b-32768",
+]
+GROQ_MODEL       = "llama-3.3-70b-versatile"
+_groq_model_index = 0
 
-# ═══ RSS ИСТОЧНИКИ — РАСШИРЕННЫЕ ═══
+# ═══ ВРЕМЯ МСК (НОВОЕ) ═══
+def msk_now() -> datetime:
+    return datetime.now(pytz.timezone('Europe/Moscow'))
+
+def msk_time_str() -> str:
+    return msk_now().strftime("%d.%m.%Y %H:%M МСК")
+
+# ═══ RSS ИСТОЧНИКИ ═══
 RSS_FEEDS = [
     ("https://www.fl.ru/rss/all.xml", "🇷🇺 FL.ru"),
     ("https://www.fl.ru/rss/all.xml?category=3", "🇷🇺 FL.ru/Тексты"),
@@ -39,15 +56,12 @@ RSS_FEEDS = [
     ("https://weworkremotely.com/remote-jobs.rss", "🌍 WWR"),
 ]
 
-# ═══ КЛЮЧЕВЫЕ СЛОВА — ВСЕ ЯЗЫКИ ═══
 KEYWORDS = [
-    # Тексты и контент
     "написать текст", "написать статью", "написать описание",
     "копирайтинг", "копирайтер", "контент", "рерайтинг",
     "блог", "blog post", "article", "content writing",
     "статья", "тексты для", "наполнение сайта",
     "продающий текст", "рекламный текст",
-    # Переводы — ВСЕ ЯЗЫКИ МИРА
     "перевод", "перевести", "translation", "translate", "переводчик",
     "перевод текста", "перевод с английского", "перевод на английский",
     "перевод немецкий", "перевод французский", "перевод испанский",
@@ -59,30 +73,27 @@ KEYWORDS = [
     "перевод греческий", "перевод иврит", "перевод хинди",
     "перевод индонезийский", "перевод вьетнамский", "перевод тайский",
     "перевод малайский", "перевод тагальский", "перевод суахили",
+    "перевод чеченский", "перевод казахский", "перевод узбекский",
     "технический перевод", "деловой перевод", "юридический перевод",
     "медицинский перевод", "перевод договора", "перевод документа",
     "any language", "multilingual", "localization", "локализация",
-    # Редактура
     "редактура", "корректура", "proofreading", "editing", "редактировать",
-    # Email и рассылки
     "email рассылка", "email маркетинг", "письмо клиентам",
     "welcome письмо", "email копирайтинг", "newsletter",
-    # Лендинги и сайты
     "текст для лендинга", "тексты для сайта", "landing page",
     "about us", "about page", "текст для страницы",
-    # Соцсети
     "посты инстаграм", "контент telegram", "smm копирайтинг",
     "посты соцсетей", "контент план", "сценарий reels",
     "сценарий tiktok", "подписи к фото",
-    # Маркетплейсы
     "карточка товара", "описание товара", "маркетплейс",
     "wildberries", "wb", "ozon", "озон", "яндекс маркет",
     "product description", "amazon listing", "etsy listing",
-    # Презентации и документы
     "текст презентации", "написать презентацию", "текст для слайдов",
     "бизнес план текст", "коммерческое предложение",
-    # Proposals и отклики
     "написать proposal", "сопроводительное письмо", "cover letter",
+    "резюме", "resume", "cv", "написать резюме",
+    "сео текст", "seo текст", "seo writing", "ключевые слова",
+    "транскрибация", "транскрипция", "transcription",
 ]
 
 BLACKLIST = [
@@ -143,6 +154,14 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS filtered_jobs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         title TEXT, url TEXT, reason TEXT, date TEXT
+    )''')
+    # Лог заказов (НОВОЕ)
+    c.execute('''CREATE TABLE IF NOT EXISTS jobs_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id TEXT UNIQUE,
+        title TEXT, url TEXT, status TEXT,
+        lila_decision TEXT, lila_reason TEXT,
+        found_at TEXT, source TEXT
     )''')
     conn.commit()
     conn.close()
@@ -234,23 +253,41 @@ def is_relevant(title, desc):
             return False
     return any(kw in text for kw in KEYWORDS)
 
-# ═══ GROQ ХЕЛПЕР ═══
+# ═══ GROQ — РОТАЦИЯ МОДЕЛЕЙ (НОВОЕ) ═══
 
-async def groq_request(messages, system="", model=GROQ_MODEL, max_tokens=800):
-    msgs = []
-    if system:
-        msgs.append({"role": "system", "content": system})
-    msgs.extend(messages)
-    async with httpx.AsyncClient(timeout=40) as client:
-        r = await client.post(
-            GROQ_URL,
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-            json={"model": model, "messages": msgs, "max_tokens": max_tokens}
-        )
-        data = r.json()
-        if "choices" not in data:
-            raise Exception(f"Groq error: {data}")
-        return data["choices"][0]["message"]["content"].strip()
+async def groq_request(messages, system="", model=None, max_tokens=800):
+    global _groq_model_index
+    for attempt in range(len(GROQ_MODELS)):
+        current_model = GROQ_MODELS[_groq_model_index] if model is None else model
+        msgs = []
+        if system:
+            msgs.append({"role": "system", "content": system})
+        msgs.extend(messages)
+        try:
+            async with httpx.AsyncClient(timeout=40) as client:
+                r = await client.post(
+                    GROQ_URL,
+                    headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                    json={"model": current_model, "messages": msgs, "max_tokens": max_tokens}
+                )
+                if r.status_code == 429:
+                    wait = (2 ** attempt) + random.uniform(0, 1)
+                    logger.warning(f"⚠️ Rate limit [{current_model}] → переключаю, жду {wait:.1f}с")
+                    _groq_model_index = (_groq_model_index + 1) % len(GROQ_MODELS)
+                    await asyncio.sleep(wait)
+                    continue
+                data = r.json()
+                if "choices" not in data:
+                    raise Exception(f"Groq error: {data}")
+                logger.info(f"✅ Groq [{current_model}]")
+                return data["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            if "429" in str(e) or "rate" in str(e).lower():
+                _groq_model_index = (_groq_model_index + 1) % len(GROQ_MODELS)
+                await asyncio.sleep(2)
+                continue
+            raise
+    return "⚠️ Все модели временно недоступны."
 
 # ═══ УМНЫЙ PROPOSAL ═══
 
@@ -368,7 +405,7 @@ async def scan_and_send(bot) -> int:
         await asyncio.sleep(1)
     return count
 
-# ═══ ВЫПОЛНЕНИЕ ЗАКАЗА — GROQ ═══
+# ═══ ВЫПОЛНЕНИЕ ЗАКАЗА ═══
 
 async def execute_job(job: dict) -> str:
     title = job.get('title', '').lower()
@@ -382,15 +419,15 @@ async def execute_job(job: dict) -> str:
     elif any(kw in text for kw in ['email','рассылка','newsletter']):
         instruction = ("Напиши профессиональное email письмо. "
                        "Структура: тема, приветствие, текст, призыв, подпись. Деловой но живой тон.")
-    elif any(kw in text for kw in ['пост','instagram','telegram','socseti','smm','reels','tiktok']):
+    elif any(kw in text for kw in ['пост','instagram','telegram','smm','reels','tiktok']):
         instruction = ("Напиши продающий пост для соцсетей. "
                        "Крючок внимания → ценность → призыв к действию. Добавь хэштеги.")
     elif any(kw in text for kw in ['лендинг','landing','сайт','about']):
         instruction = ("Напиши продающий текст для лендинга. "
                        "USP → проблема → решение → выгоды → призыв. Фокус на пользе.")
-    elif any(kw in text for kw in ['презентация','слайды','presentation']):
-        instruction = ("Напиши текст для презентации. "
-                       "Структура: титул, введение, основные тезисы (3-5), выводы, призыв.")
+    elif any(kw in text for kw in ['резюме','resume','cv']):
+        instruction = ("Напиши профессиональное резюме. "
+                       "Структура: контакты, цель, опыт, навыки, образование.")
     else:
         instruction = "Выполни задачу профессионально. Конкретно, без воды. Готово к использованию."
 
@@ -407,18 +444,20 @@ async def execute_job(job: dict) -> str:
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 *Полифан v3.0*\n\n"
-        "Ищу заказы, пишу тексты и переводы на ЛЮБОЙ язык!\n\n"
-        "🌍 *Переводы:* русский, английский, немецкий,\n"
-        "французский, китайский, японский, арабский и все остальные!\n\n"
-        "📝 *Proposals:* генерирую кастомно под каждый заказ\n"
-        "🚫 *Автофильтр:* запрет AI пропускаем\n\n"
-        "/scan — найти заказы\n"
-        "/proposal — написать отклик\n"
-        "/translate — перевести текст\n"
-        "/copywrite — написать текст\n"
-        "/stats — статистика\n"
-        "/clear — очистить кэш",
+        f"🤖 *Полифан v3.1*\n\n"
+        f"🕐 {msk_time_str()}\n\n"
+        f"Ищу заказы, пишу тексты и переводы на ЛЮБОЙ язык!\n\n"
+        f"🌍 *Переводы:* русский, английский, немецкий,\n"
+        f"французский, китайский, японский, арабский и все остальные!\n\n"
+        f"📝 *Proposals:* генерирую кастомно под каждый заказ\n"
+        f"🚫 *Автофильтр:* запрет AI пропускаем\n"
+        f"⚡ *Groq:* ротация 4 моделей — rate limit исчез\n\n"
+        f"/scan — найти заказы\n"
+        f"/proposal — написать отклик\n"
+        f"/translate — перевести текст\n"
+        f"/copywrite — написать текст\n"
+        f"/stats — статистика\n"
+        f"/clear — очистить кэш",
         parse_mode='Markdown',
         reply_markup=_main_keyboard()
     )
@@ -430,7 +469,8 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.edit_text(
         f"✅ Нашёл и отправил Лиле: *{count}* заказов\n"
         f"🚫 Отфильтровано (AI запрет): *{stats.get('filtered_ai',0)}*\n"
-        f"📝 Proposals сгенерированы автоматически!",
+        f"📝 Proposals сгенерированы автоматически!\n"
+        f"🕐 {msk_time_str()}",
         parse_mode='Markdown'
     )
 
@@ -438,6 +478,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats = get_stats()
     await update.message.reply_text(
         f"📊 *Статистика Полифана*\n\n"
+        f"🕐 {msk_time_str()}\n\n"
         f"🔍 Найдено: {stats.get('found',0)}\n"
         f"✅ Принято: {stats.get('accepted',0)}\n"
         f"✨ Выполнено: {stats.get('completed',0)}\n"
@@ -523,7 +564,7 @@ async def copywrite_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def skills_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 *Полифан v3.0 — что умею:*\n\n"
+        "🤖 *Полифан v3.1 — что умею:*\n\n"
         "✍️ Тексты и статьи (RU/EN/DE/FR)\n"
         "🌍 Переводы на ВСЕ языки мира\n"
         "📱 Посты соцсетей, сценарии Reels/TikTok\n"
@@ -531,8 +572,10 @@ async def skills_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🌐 Тексты лендингов и сайтов\n"
         "📊 Тексты презентаций\n"
         "🛍️ Описания товаров для маркетплейсов\n"
+        "📄 Резюме и документы\n"
         "✅ Корректура и редактура\n"
         "📋 Proposals кастомно под каждый заказ\n\n"
+        "⚡ Groq: ротация 4 моделей — работаю без остановок\n\n"
         "🔍 Ищу на:\nFL.ru • Habr Freelance • RemoteOK • Jobicy • WWR",
         parse_mode='Markdown'
     )
@@ -554,11 +597,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "team_skills":
         await query.edit_message_text(
-            "🤖 *Полифан v3.0*\n\n"
+            "🤖 *Полифан v3.1*\n\n"
             "🌍 Переводы на ВСЕ языки\n"
             "✍️ Тексты, статьи, копирайтинг\n"
             "📱 Соцсети, email, лендинги\n"
-            "📋 Кастомные proposals\n\n"
+            "📄 Резюме и документы\n"
+            "📋 Кастомные proposals\n"
+            "⚡ Groq ротация 4 моделей\n\n"
             "Источники: FL.ru + Habr + RemoteOK + WWR",
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back_main")]])
@@ -590,7 +635,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             stats = get_stats()
             await query.edit_message_text(
                 f"✅ Нашёл: *{count}* заказов → отправил Лиле\n"
-                f"🚫 AI запрет: *{stats.get('filtered_ai',0)}*",
+                f"🚫 AI запрет: *{stats.get('filtered_ai',0)}*\n"
+                f"🕐 {msk_time_str()}",
                 parse_mode='Markdown',
                 reply_markup=_main_keyboard()
             )
@@ -600,6 +646,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stats = get_stats()
         await query.edit_message_text(
             f"📊 *Статистика*\n\n"
+            f"🕐 {msk_time_str()}\n\n"
             f"🔍 Найдено: {stats.get('found',0)}\n"
             f"✅ Принято: {stats.get('accepted',0)}\n"
             f"💰 Закрыто: {stats.get('done',0)}\n"
@@ -682,12 +729,13 @@ async def auto_scan_loop(bot):
                 await bot.send_message(
                     chat_id=YOUR_CHAT_ID,
                     text=f"🔍 *Полифан нашёл {count} заказов* → отправил Лиле!\n"
-                         f"📝 Proposals сгенерированы",
+                         f"📝 Proposals сгенерированы\n"
+                         f"🕐 {msk_time_str()}",
                     parse_mode='Markdown'
                 )
         except Exception as e:
             logger.error(f"auto_scan: {e}")
-        await asyncio.sleep(1800)
+        await asyncio.sleep(900)  # 15 минут вместо 30
 
 # ═══ ЗАПУСК ═══
 
@@ -713,13 +761,14 @@ def main():
                 await application.bot.send_message(
                     chat_id=YOUR_CHAT_ID,
                     text=(
-                        "🤖 *Полифан v3.0 запущен!*\n\n"
-                        "✅ Groq — бесплатно\n"
-                        "🌍 Переводы на ВСЕ языки мира\n"
-                        "🖥 + Habr Freelance добавлен\n"
-                        "📝 Proposals кастомные\n"
-                        "🚫 Автофильтр AI запретов\n\n"
-                        "/proposal /translate /copywrite"
+                        f"🤖 *Полифан v3.1 запущен!*\n\n"
+                        f"🕐 {msk_time_str()}\n\n"
+                        f"✅ Groq — ротация 4 моделей\n"
+                        f"✅ Rate limit защита\n"
+                        f"✅ Время МСК везде\n"
+                        f"✅ Скан каждые 15 мин\n"
+                        f"✅ Резюме добавлено в категории\n\n"
+                        f"/proposal /translate /copywrite"
                     ),
                     parse_mode='Markdown'
                 )
@@ -727,7 +776,7 @@ def main():
             logger.error(f"post_init: {e}")
 
     app.post_init = post_init
-    logger.info("🤖 Полифан v3.0!")
+    logger.info("🤖 Полифан v3.1!")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
