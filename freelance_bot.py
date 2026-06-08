@@ -22,6 +22,7 @@ YOUR_CHAT_ID    = int(os.getenv("YOUR_CHAT_ID", "0"))
 LILU_CHAT_ID    = int(os.getenv("LILU_CHAT_ID", str(YOUR_CHAT_ID)))
 DB_PATH         = os.getenv("DB_PATH", "/tmp/freelance.db")
 KWORK_URL       = os.getenv("KWORK_URL", "https://kwork.ru/user/artem_sh")
+UPWORK_RSS_URL  = os.getenv("UPWORK_RSS_URL", "https://www.upwork.com/ab/feed/jobs/rss?q=telegram+bot+OR+wildberries+OR+карточки")
 
 if not TELEGRAM_TOKEN or not GROQ_API_KEY:
     raise EnvironmentError("❌ Проверь FREELANCE_BOT_TOKEN и GROQ_API_KEY в переменных окружения!")
@@ -53,7 +54,11 @@ RSS_FEEDS = [
     ("https://remoteok.com/remote-writing-jobs.json", "🌍 RemoteOK"),
     ("https://jobicy.com/?feed=job_feed&job_categories=writing", "🌍 Jobicy"),
     ("https://weworkremotely.com/remote-jobs.rss", "🌍 WWR"),
+    (UPWORK_RSS_URL, "🌐 Upwork"),
 ]
+
+# Хранилище заказов для кнопки Cover Letter
+jobs_cache: dict = {}
 
 KEYWORDS = [
     "написать текст", "написать статью", "написать описание",
@@ -386,18 +391,49 @@ async def parse_rss(client) -> list:
 # ═══ ОТПРАВКА ЛИЛЕ ═══
 
 async def send_to_lilu(bot, job: dict):
+    """Отправляет карточку заказа с кнопкой Cover Letter."""
     try:
-        proposal = await generate_smart_proposal(job)
+        job_id = job['id']
+        jobs_cache[job_id] = job  # сохраняем для кнопки
+
+        safe_source = html.escape(job.get('source', ''))
+        safe_title  = html.escape(job.get('title', ''))
+        safe_desc   = html.escape(job.get('description', '')[:350]) + "…"
+        safe_budget = html.escape(job.get('budget', 'Договорная'))
+        safe_url    = job.get('url', '')
+
+        msg = (
+            f"🎯 <b>ПОЛИФАН НАШЁЛ ЗАКАЗ!</b>\n\n"
+            f"🏢 <b>Биржа:</b> {safe_source}\n"
+            f"📌 <b>Тема:</b> {safe_title}\n"
+            f"💰 <b>Бюджет:</b> {safe_budget}\n"
+            f"📄 <b>Описание:</b> <i>{safe_desc}</i>\n\n"
+            f"🔗 <a href=\'{safe_url}\'>Открыть заказ</a>"
+        )
+
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✍️ Cover Letter (AI)", callback_data=f"cl_{job_id}")
+        ]])
+
+        if YOUR_CHAT_ID:
+            await bot.send_message(
+                chat_id=YOUR_CHAT_ID,
+                text=msg,
+                parse_mode='HTML',
+                reply_markup=keyboard,
+                disable_web_page_preview=True
+            )
+
+        # Сохраняем в БД
         conn = sqlite3.connect(DB_PATH)
         c    = conn.cursor()
-        source = f"Полифан | {job.get('source', '')}"
         c.execute(
-            "UPDATE jobs SET status='pending_lilu', source=?, result=?, updated_at=? WHERE id=?",
-            (source[:200], proposal[:2000] if proposal else "", datetime.now().isoformat(), job['id'])
+            "UPDATE jobs SET status=\'pending_lilu\', updated_at=? WHERE id=?",
+            (datetime.now().isoformat(), job_id)
         )
         conn.commit()
         conn.close()
-        logger.info(f"📨 → Лила (pending_lilu + proposal): {job.get('title','')[:50]}")
+        logger.info(f"📨 Отправлен заказ: {job.get('title','')[:50]}")
     except Exception as e:
         logger.error(f"send_to_lilu: {e}")
 
@@ -621,6 +657,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back_main")]])
         )
+    elif data.startswith("cl_"):
+        job_id = data[3:]
+        job = jobs_cache.get(job_id) or get_job(job_id)
+        if not job:
+            await query.answer("❌ Данные заказа устарели", show_alert=True)
+            return
+        await query.answer("⏳ Генерирую Cover Letter...")
+        await query.message.reply_text("✍️ Пишу кавер-письмо через Groq...")
+        cover = await generate_smart_proposal(job)
+        if cover:
+            await query.message.reply_html(
+                f"✍️ <b>Cover Letter для {html.escape(job.get('source',''))}:</b>\n\n"
+                f"<code>{html.escape(cover)}</code>"
+            )
+        else:
+            await query.message.reply_text("❌ Ошибка генерации, попробуй ещё раз")
+
     elif data.startswith("done_"):
         update_job(data[5:], 'done')
         await query.edit_message_text("💰 Заказ закрыт! 🎉")
